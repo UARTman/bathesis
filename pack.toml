@@ -1,0 +1,10 @@
+[custom.all.dtc-utils]
+type = "local"
+path = "."
+ipkg = "dtc-utils.ipkg"
+test = "test/test.ipkg"
+
+[custom.all.dtc-utils-test]
+type = "local"
+path = "test"
+ipkg = "test.ipkg"
