@@ -100,8 +100,8 @@ whatParamsListBinds l = fromList . map (\(x,y)=>x) $ l
 
 -- isDeclPublic : Decl
 isDeclPrivate : Decl -> Bool
-isDeclPrivate (IClaim fc rig Private xs sig) = True
-isDeclPrivate (IClaim fc rig _ xs sig) = False
+isDeclPrivate (IClaim (MkFCVal fc (MkIClaimData rig Private xs sig))) = True
+isDeclPrivate (IClaim (MkFCVal fc (MkIClaimData rig _ xs sig))) = False
 isDeclPrivate (IData fc DefaultedValue mtreq dt) = True
 isDeclPrivate (IData fc (SpecifiedValue Private) mtreq dt) = True
 isDeclPrivate (IRecord fc mstr DefaultedValue mtreq rec) = True
@@ -115,9 +115,9 @@ whatDeclDeclares : Decl -> SortedSet Name
 whatDeclExports (IParameters fc params decls) = assert_total foldl (\x, y => union (whatDeclExports y) x) empty decls
 whatDeclExports d = if (isDeclPrivate d) then empty else whatDeclDeclares d
 
-whatDeclDeclares (IClaim fc rig vis xs (MkTy fc1 nameFC n ty)) = insert n empty
+whatDeclDeclares (IClaim (MkFCVal fc (MkIClaimData rig vis xs (MkTy fc1 (MkFCVal nameFC n) ty)))) = insert n empty
 whatDeclDeclares (IData fc x mtreq (MkData fc1 n tycon opts datacons)) = do
-  let datacons' = Data.SortedSet.fromList $ map (\(MkTy fc nameFC n ty) => n) datacons
+  let datacons' = Data.SortedSet.fromList $ map (\(MkTy fc (MkFCVal nameFC n) ty) => n) datacons
   insert n datacons'
 whatDeclDeclares (IData fc x mtreq (MkLater fc1 n tycon)) = insert n empty
 whatDeclDeclares (IDef fc nm cls) = empty
@@ -146,7 +146,7 @@ whatPiBinds : TTImp -> SortedSet Name
 whatPiBinds t = union (countBV t) (whatPiBinds' t)
 
 whatDeclBinds : Decl -> SortedMap Name $ SortedSet Name
-whatDeclBinds (IClaim fc rig vis xs (MkTy fc1 nameFC n ty)) = insert n (union (whatPiBinds ty) (countBV ty)) empty
+whatDeclBinds (IClaim (MkFCVal fc (MkIClaimData rig vis xs (MkTy fc1 (MkFCVal nameFC n) ty)))) = insert n (union (whatPiBinds ty) (countBV ty)) empty
 whatDeclBinds (IParameters fc params decls) = do
   let bs = foldl (mergeWith union) Data.SortedMap.empty $ map (assert_total whatDeclBinds) decls
   let pb = whatParamsListBinds params
@@ -169,7 +169,7 @@ mutual
     let lhs_names = countBV lhs
     lhs' <- assert_total mapATTImp' (provideShadowingInfo f) lhs
     wval' <- assert_total mapATTImp' (provideShadowingInfo f) wval
-    let newNs = fromMaybe lhs_names $ map (\x => insert x lhs_names) prf
+    let newNs = fromMaybe lhs_names $ map (\(_, x) => insert x lhs_names) prf
     cls' <- localSI (union newNs) $ assert_total traverse (doClause f) cls
     pure $ WithClause fc lhs' rig wval' prf flags cls'
   doClause f (ImpossibleClause fc lhs) = do
@@ -232,16 +232,16 @@ mutual
     Monad m =>
     (TTImp -> ShadowingInfoT m TTImp -> ShadowingInfoT m TTImp) ->
     ITy -> ShadowingInfoT m ITy
-  doITy f (MkTy fc nameFC n ty) = do
+  doITy f (MkTy fc (MkFCVal nameFC n) ty) = do
     ty' <- assert_total $ mapATTImp' (provideShadowingInfo f) ty
-    pure $ MkTy fc nameFC n ty'
+    pure $ MkTy fc (MkFCVal nameFC n) ty'
 
   doDecl :
     Monad m =>
     (TTImp -> ShadowingInfoT m TTImp -> ShadowingInfoT m TTImp) ->
     Decl -> ShadowingInfoT m Decl
-  doDecl f (IClaim fc rig vis xs ty) =
-    pure $ IClaim fc rig vis xs !(doITy f ty)
+  doDecl f (IClaim (MkFCVal fc (MkIClaimData rig vis xs ty))) =
+    pure $ IClaim (MkFCVal fc (MkIClaimData rig vis xs !(doITy f ty)))
   doDecl f (IData fc x mtreq (MkData fc1 n Nothing opts datacons)) = do
     dcs' <- localSI (insert n) $ assert_total traverse (doITy f) datacons
     pure $ IData fc x mtreq (MkData fc1 n Nothing opts dcs')
