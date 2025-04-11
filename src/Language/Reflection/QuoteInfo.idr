@@ -1,16 +1,17 @@
 module Language.Reflection.QuoteInfo
 
-import Language.Reflection
-import Language.Reflection.Pretty
-import Language.Reflection.Util
-import Language.Reflection.Types
-import Language.Reflection.TT
-import Language.Reflection.TTImp
-import Language.Reflection.Syntax
-import Language.Reflection.Syntax.Ops
-import Control.Monad.Identity
-import Control.Monad.Trans
-import Control.Monad.Reader
+import public Language.Reflection
+import public Language.Reflection.Pretty
+import public Language.Reflection.Util
+import public Language.Reflection.Types
+import public Language.Reflection.TT
+import public Language.Reflection.TTImp
+import public Language.Reflection.Syntax
+import public Language.Reflection.Syntax.Ops
+import public Control.Monad.Identity
+import public Control.Monad.Trans
+import public Control.Monad.Reader
+import public Control.Monad.State
 
 %default total
 
@@ -79,6 +80,12 @@ implementation Monad m => MonadWriteQuoteInfo (QuoteInfoT m) where
 export
 implementation MonadTrans m => MonadReadQuoteInfo m'  => Monad (m m') => MonadReadQuoteInfo (m m') where
     isQuote = lift isQuote
+
+export
+implementation MonadState t m => MonadState t (QuoteInfoT m) where
+  get = lift get
+  put x = lift (put x)
+
 
 -- export
 -- implementation MonadTrans m => MonadWriteQuoteInfo m' => Monad (m m') => MonadWriteQuoteInfo (m m') where

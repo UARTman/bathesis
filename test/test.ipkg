@@ -13,7 +13,7 @@ authors = "Anton Gusev"
 -- langversion
 
 -- packages to add to search path
-depends = dtc-utils, hedgehog
+depends = dtc-utils, hedgehog, golden-runner-helper
 
 -- modules to install
 -- modules =

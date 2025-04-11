@@ -1,5 +1,7 @@
 module Main
 
+import Monomorphisation
+
 import Language.Reflection
 import Language.Reflection.Pretty
 import Language.Reflection.Util
@@ -8,6 +10,8 @@ import Language.Reflection.TTImp
 import Language.Reflection.VarSubst
 
 import Hedgehog
+-- import Test.Golden.RunnerHelper
+import GoldenRunner
 
 %language ElabReflection
 
@@ -250,13 +254,18 @@ quoteQualities = MkGroup "Quote"
   , ("Unquote in multiple quotes", unquoteInMultiple)
   ]
 
+runGolden : IO ()
+runGolden = goldenRunner
+  [ "Unification tests" `atDir` "unification"
+  ] 
+  [ basicStuff
+  , ttImpQualities
+  , declQualities
+  , clauseQualities
+  , quoteQualities
+  ]
+
+
 main : IO ()
-main = do
-  putStrLn "Running hedgehog tests..."
-  test
-    [ basicStuff
-    , ttImpQualities
-    , declQualities
-    , clauseQualities
-    , quoteQualities
-    ]
+main = runGolden
+    

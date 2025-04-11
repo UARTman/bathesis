@@ -1,20 +1,20 @@
 module Language.Reflection.ShadowingInfo
 
-import Language.Reflection
-import Language.Reflection.Pretty
-import Language.Reflection.Util
-import Language.Reflection.Types
-import Language.Reflection.TT
-import Language.Reflection.TTImp
-import Language.Reflection.Syntax
-import Language.Reflection.Syntax.Ops
-import Language.Reflection.QuoteInfo
-import Control.Monad.Identity
-import Control.Monad.Trans
-import Control.Monad.Reader
-import Control.Monad.State
-import Data.SortedSet
-import Data.SortedMap
+import public Language.Reflection
+import public Language.Reflection.Pretty
+import public Language.Reflection.Util
+import public Language.Reflection.Types
+import public Language.Reflection.TT
+import public Language.Reflection.TTImp
+import public Language.Reflection.Syntax
+import public Language.Reflection.Syntax.Ops
+import public Language.Reflection.QuoteInfo
+import public Control.Monad.Identity
+import public Control.Monad.Trans
+import public Control.Monad.Reader
+import public Control.Monad.State
+import public Data.SortedSet
+import public Data.SortedMap
 
 %default total
 
@@ -78,6 +78,11 @@ implementation Monad m => MonadReadShadowingInfo (ShadowingInfoT m) where
 public export
 implementation Monad m => MonadWriteQuoteInfo (ShadowingInfoT (QuoteInfoT m)) where
   setIsQuote b (MkShadowingInfoT x) = lift $ setIsQuote b $ runReaderT !shadowedVars x
+
+export
+implementation MonadState t m => MonadState t (ShadowingInfoT m) where
+  get = lift get
+  put x = lift (put x)
 
 
 localSI : Monad m => (NameSet -> NameSet) -> ShadowingInfoT m a -> ShadowingInfoT m a

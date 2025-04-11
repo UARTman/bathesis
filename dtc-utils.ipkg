@@ -16,7 +16,11 @@ authors = "Anton Gusev"
 -- depends =
 
 -- modules to install
-modules = Language.Reflection.VarSubst, Language.Reflection.QuoteInfo, Language.Reflection.ShadowingInfo
+modules = Language.Reflection.VarSubst
+        , Language.Reflection.QuoteInfo
+        , Language.Reflection.ShadowingInfo
+        , Language.Reflection.Unification       
+        , Language.Reflection.Monomorphisation
 
 depends = elab-util, elab-pretty, prettier
 

@@ -1,0 +1,7 @@
+package a-test
+
+main = Spec
+
+executable = test
+
+depends = dtc-utils
