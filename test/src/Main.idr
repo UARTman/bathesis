@@ -18,17 +18,17 @@ import GoldenRunner
 
 justSubst : Property
 justSubst = property1 $ do
-  substituteVariables `{a} `(b) `(a) === `(b)
+  substituteVariable `{a} `(b) `(a) === `(b)
 
 substOneButNotTheOther : Property
 substOneButNotTheOther = property1 $ do
-  substituteVariables `{a} `(b)
+  substituteVariable `{a} `(b)
     `((x + a - 1) / (2 * a)) ===
     `((x + b - 1) / (2 * b))
 
 substBigExpr : Property
 substBigExpr = property1 $ do
-  substituteVariables `{a} `(let a : Int; a = 10 in if a == 10 then x else y)
+  substituteVariable `{a} `(let a : Int; a = 10 in if a == 10 then x else y)
     `(a) === `(let a : Int; a = 10 in if a == 10 then x else y)
 
 basicStuff : Group
@@ -40,35 +40,35 @@ basicStuff = MkGroup "Basic substitute functionality" [
 
 iPiArg : Property
 iPiArg = property1 $ do
-  substituteVariables `{a} `(b)
+  substituteVariable `{a} `(b)
     `((a : Type) -> (x : a) -> Type) ===
     `((a : Type) -> (x : a) -> Type)
 
 iPiArgImplicit : Property
 iPiArgImplicit = property1 $ do
-  substituteVariables `{a} `(b)
+  substituteVariable `{a} `(b)
     `((a : Type) => (x : a) -> Type) ===
     `((a : Type) => (x : a) -> Type)
 
 iPiArg' : Property
 iPiArg' = property1 $ do
-  substituteVariables `{a} `(b)
+  substituteVariable `{a} `(b)
     `(Type -> (x : a) -> Type) ===
     `(Type -> (x : b) -> Type)
 
 iLamN : Property
 iLamN = property1 $ do
-  substituteVariables `{x} `(z)
+  substituteVariable `{x} `(z)
     `(\x: List x=>x+y) === `(\x: List z=>x+y)
 
 iLet : Property
 iLet = property1 $ do
-  substituteVariables `{a} `(b)
+  substituteVariable `{a} `(b)
     `(let a : List a = a in a) === `(let a : List b = b in a)
 
 iCase: Property
 iCase = property1 $ do
-  substituteVariables `{a} `(b) `(case a of
+  substituteVariable `{a} `(b) `(case a of
     (Cat a b) => a b c d
     (Cat' d e) => a b c d
   ) === `(case b of
@@ -78,7 +78,7 @@ iCase = property1 $ do
 
 iLocalBasic: Property
 iLocalBasic = property1 $ do
-  substituteVariables `{a} `(b) `(
+  substituteVariable `{a} `(b) `(
     let
       x : Int
       x = a 10
@@ -89,7 +89,7 @@ iLocalBasic = property1 $ do
       x = b 10
     in b x
   )
-  substituteVariables `{a} `(b) `(
+  substituteVariable `{a} `(b) `(
     let
       a : Int
       a = 10
@@ -103,7 +103,7 @@ iLocalBasic = property1 $ do
 
 iDeclsFollowing : Property
 iDeclsFollowing = property1 $ do
-  substituteVariables `{a} `(b) `(
+  substituteVariable `{a} `(b) `(
     let
       a : Nat
       a = 100
@@ -123,7 +123,7 @@ iDeclsFollowing = property1 $ do
 
 iPrivateDeclsLocal : Property
 iPrivateDeclsLocal = property1 $ do
-  substituteVariables `{a} `(b) `(
+  substituteVariable `{a} `(b) `(
     let
       private
       a : Nat
@@ -140,7 +140,7 @@ iPrivateDeclsLocal = property1 $ do
 
 iPrivateDeclsInNS : Property
 iPrivateDeclsInNS = property1 $ do
-  substituteVariables `{a} `(b) `(
+  substituteVariable `{a} `(b) `(
     let
     namespace Q
       private
@@ -158,7 +158,7 @@ iPrivateDeclsInNS = property1 $ do
 
 argsInDef : Property
 argsInDef = property1 $ do
-  substituteVariables `{a} `(b) `(
+  substituteVariable `{a} `(b) `(
     let
       f : List a -> Type
       f _ = a
@@ -173,7 +173,7 @@ argsInDef = property1 $ do
 
 withClause : Property
 withClause = property1 $ do
-  substituteVariables `{a} `(b) `(
+  substituteVariable `{a} `(b) `(
     let
       f : List t -> Nat
       f [] = 0
@@ -192,15 +192,15 @@ withClause = property1 $ do
 
 quoteSingle : Property
 quoteSingle = property1 $ do
-  substituteVariables `{a} `(b) `(`(a)) === `(`(a))
+  substituteVariable `{a} `(b) `(`(a)) === `(`(a))
 
 quoteMultiple : Property
 quoteMultiple = property1 $ do
-  substituteVariables `{a} `(b) `(`(`(a))) === `(`(`(a)))
+  substituteVariable `{a} `(b) `(`(`(a))) === `(`(`(a)))
 
 quoteDecl : Property
 quoteDecl = property1 $ do
-  substituteVariables `{a} `(b) `(`[
+  substituteVariable `{a} `(b) `(`[
     x : Nat
     x = a
   ]) === `(`[
@@ -210,14 +210,14 @@ quoteDecl = property1 $ do
 
 unquoteInSingle : Property
 unquoteInSingle = property1 $ do
-  substituteVariables `{a} `(b)
+  substituteVariable `{a} `(b)
     `(`(x + ~(IUnquote emptyFC `(a)))) ===
     `(`(x + ~(IUnquote emptyFC `(b))))
 
 
 unquoteInMultiple : Property
 unquoteInMultiple = property1 $ do
-  substituteVariables `{a} `(b)
+  substituteVariable `{a} `(b)
     `(`(`(x + ~(IUnquote emptyFC `(a))))) ===
     `(`(`(x + ~(IUnquote emptyFC `(b)))))
 

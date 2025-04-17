@@ -15,6 +15,8 @@ import public Data.SortedSet
 import public Data.SortedMap
 import public Data.SortedMap.Dependent
 import public Data.String
+import public Control.Monad.State
+import public Control.Monad.Either
 
 import public Derive.Prelude
 import public Deriving.Show
@@ -22,35 +24,28 @@ import public Text.PrettyPrint.Bernardy.Core
 import public Language.Reflection.Pretty
 import public Text.PrettyPrint.Bernardy.Interface
 
-import public PrimIO
+import public Deriving.DepTyCheck.Util.Reflection
 
 %language ElabReflection
--- %auto_lazy off
-
--- %default total
 
 (.toList) : SortedSet t -> List t
 (.toList) = Prelude.toList
 
-||| The top-level unification operation context
 public export
-record UnificationContext where
+record UnificationCtx where
   constructor MkUC
-  ||| Free variables in left-hand-side expression
-  lhsVars : SortedSet Name
-  ||| Left-hand-side expression
   lhs : TTImp
-  ||| Free variables in right-hand-side expression
-  rhsVars : SortedSet Name
-  ||| Left-hand-side expression
+  lhsVars : SortedSet Name
   rhs : TTImp
+  rhsVars : SortedSet Name
 
-%runElab derive "UnificationContext" [Show, Eq]
+%runElab derive "UnificationCtx" [Show, Eq]
 
 ||| Origin of data (left- or right-hand side)
 public export
 data Origin = Left | Right
 
+public export
 Eq Origin where
   (==) Left Left = True
   (==) Right Right = True
@@ -58,78 +53,74 @@ Eq Origin where
 
 %runElab derive "Origin" [Show, Eq]
 
-parameters {auto uc: UnificationContext}
-  ||| Metadata container for keeping track of the data's origin
+public export
+record Tag {auto uc: UnificationCtx} (t : Type) where
+  constructor MkTag
+  origin: Origin
+  inner: t
+
+parameters {auto uc: UnificationCtx}
   public export
-  data WithOrigin : (t : Type) -> Type where
-    MkOriginData: Origin -> t -> WithOrigin t
+  Eq t => Eq (Tag t) where
+    (==) (MkTag o x) (MkTag o' y) = o == o' && x == y
 
-  Eq t => Eq (WithOrigin t) where
-    (==) (MkOriginData o t) (MkOriginData o' t') = o == o' && t == t'
-
-  Show t => Show (WithOrigin t) where
-    show (MkOriginData Left t) = "withLeft \{show t}"
-    show (MkOriginData Right t) = "withRight \{show t}"
-
-  Ord t => Ord (WithOrigin t) where
-    compare (MkOriginData Left x) (MkOriginData Left y) = compare x y
-    compare (MkOriginData Left y) (MkOriginData Right w) = LT
-    compare (MkOriginData Right y) (MkOriginData Left w) = GT
-    compare (MkOriginData Right x) (MkOriginData Right y) = compare x y
-
-  -- Shorthand constructors
-  ||| Construct LHS data
   public export
-  withLeft : t -> WithOrigin t
-  withLeft x = MkOriginData Left x
+  Show t => Show (Tag t) where
+    show (MkTag Left x) = "tagLeft \{show x}"
+    show (MkTag Right x) = "tagRight \{show x}"
 
-  ||| Construct RHS data
   public export
-  withRight : t -> WithOrigin t
-  withRight x = MkOriginData Right x
+  Ord t => Ord (Tag t) where
+    compare (MkTag Left x) (MkTag Left y) = compare x y
+    compare (MkTag Left _) (MkTag Right _) = LT
+    compare (MkTag Right _) (MkTag Left _) = GT
+    compare (MkTag Right x) (MkTag Right y) = compare x y
 
-  -- Mapping functions
-  ||| Construct data of same origin
   public export
-  (.same) : WithOrigin t -> g -> WithOrigin g
-  (.same) (MkOriginData d _) y = MkOriginData d y
+  Functor Tag where
+    map f (MkTag o x) = MkTag o $ f x
 
-  ||| Map
-  mapInner : (t->u) -> WithOrigin t -> WithOrigin u
-  mapInner f (MkOriginData x y) = MkOriginData x $ f y
-
-  -- Extractors
-  ||| Access underlying data
   public export
-  (.data) : WithOrigin t -> t
-  (.data) (MkOriginData _ x) = x
+  tagLeft : t -> Tag t
+  tagLeft = MkTag Left
 
-  ||| Access origin
   public export
-  (.origin) : WithOrigin t -> Origin
-  (.origin) (MkOriginData x _) = x
+  tagRight : t -> Tag t
+  tagRight = MkTag Right
+
+  public export
+  (.same) : Tag t -> g -> Tag g
+  (.same) (MkTag o _) x = MkTag o x
+
+  public export
+  (-|>) : Tag t -> g -> Tag g
+  (-|>) = (.same)
+
+  public export
+  (.data) : Tag t -> t
+  (.data) = (.inner)
 
   -- Free variables
   ||| Access free variables, available from the context
   public export
-  (.freeVars) : WithOrigin t -> SortedSet Name
-  (.freeVars) (MkOriginData Left _) = uc.lhsVars
-  (.freeVars) (MkOriginData Right _) = uc.rhsVars
+  (.freeVars) : Tag t -> SortedSet Name
+  (.freeVars) (MkTag Left _) = uc.lhsVars
+  (.freeVars) (MkTag Right _) = uc.rhsVars
 
   ||| Check if a name with origin metadata refers to a free variable
   public export
-  (.isFreeVar) : WithOrigin Name -> Bool
+  (.isFreeVar) : Tag Name -> Bool
   (.isFreeVar) dt = dt.freeVars `contains'` dt.data
 
   ||| Check if an expression with origin metadata is a free variable invocation
   public export
-  (.isFreeVar') : WithOrigin TTImp -> Bool
-  (.isFreeVar') dt@(MkOriginData _ (IVar _ y)) = dt.freeVars `contains'` y
+  (.isFreeVar') : Tag TTImp -> Bool
+  (.isFreeVar') dt@(MkTag _ (IVar _ y)) = dt.freeVars `contains'` y
   (.isFreeVar') _ = False
 
   ||| List all the free variables an origin-tagged expression depends on
   public export
-  dependencies : WithOrigin TTImp -> SortedSet Name
+  dependencies : Tag TTImp -> SortedSet Name
   dependencies dt =
     fromList .
     filter (\n => containsVariable n dt.data) .
@@ -139,31 +130,29 @@ parameters {auto uc: UnificationContext}
 
   ||| List all the free variables an origin-tagged expression depends on
   public export
-  (.dependencies) : WithOrigin TTImp -> SortedSet Name
+  (.dependencies) : Tag TTImp -> SortedSet Name
   (.dependencies) = dependencies
 
 ||| Infomration on a set of equivalent free variables
 public export
-record BucketData {auto uc: UnificationContext} where
+record BucketData {auto uc: UnificationCtx} where
   constructor MkBD
   ||| All free variables in the set
-  names : SortedSet $ WithOrigin Name
+  names : SortedSet $ Tag Name
   ||| The expression the set is equal to
-  expr : Maybe $ WithOrigin TTImp
+  expr : Maybe $ Tag TTImp
 
-||| Intermediate unification state
 public export
-record UnificationState {auto uc: UnificationContext} where
+record UnificationState {auto uc: UnificationCtx} where
   constructor MkUS
   ||| Bucket id counter (incremented every new bucket)
   nextBucket : Nat
   ||| Variable sets
   buckets : SortedMap Nat BucketData
   ||| Name to set id map
-  nameToBucket : SortedMap (WithOrigin Name) Nat
+  nameToBucket : SortedMap (Tag Name) Nat
 
-parameters {auto uc: UnificationContext}
-
+parameters {auto uc: UnificationCtx}
   public export
   Show BucketData where
     show (MkBD n e) = "MkBD \{show n} \{show e}"
@@ -182,13 +171,13 @@ parameters {auto uc: UnificationContext}
     = foldr (flip insert bucket) m vars
 
   ||| Find var set associtated with name, if any
-  queryName : WithOrigin Name -> UnificationState -> Maybe BucketData
+  queryName : Tag Name -> UnificationState -> Maybe BucketData
   queryName n b = lookup n b.nameToBucket >>= flip lookup b.buckets
 
-  setDataByName : 
-       WithOrigin Name 
-    -> BucketData 
-    -> UnificationState 
+  setDataByName :
+       Tag Name
+    -> BucketData
+    -> UnificationState
     -> UnificationState
   setDataByName n d state with (state.nameToBucket `lookup'` n)
     setDataByName _ _ state | Nothing = state
@@ -202,259 +191,251 @@ parameters {auto uc: UnificationContext}
     , buckets $= flip insert bd state.nextBucket
     } state
 
-  -- Redirect all variables listed in names to point at a instead of b, 
+  -- Redirect all variables listed in names to point at a instead of b,
   -- update a with newAData and delete b
-  mergeIntoAndUpdate : 
-       Nat -> Nat 
-    -> List (WithOrigin Name) 
-    -> BucketData 
-    -> UnificationState 
+  mergeIntoAndUpdate :
+       Nat -> Nat
+    -> List (Tag Name)
+    -> BucketData
     -> UnificationState
-  mergeIntoAndUpdate a b names newAData = 
+    -> UnificationState
+  mergeIntoAndUpdate a b names newAData =
     { nameToBucket $= transferVariables names a
     , buckets $= insert a newAData . delete b
     }
 
+  public export
+  UnificationT : (m : Type -> Type) -> Elaboration m => Type -> Type
+  UnificationT m = EitherT String $ StateT UnificationState m
 
-  unifyOver : 
-       WithOrigin TTImp 
-    -> WithOrigin TTImp 
-    -> UnificationState 
-    -> Elab $ Either String UnificationState
+  public export
+  Unification : Type -> Type
+  Unification = UnificationT Elab
 
-  -- TODO: tersify
-  tryMergeBuckets : 
-       Nat 
-    -> Nat 
-    -> UnificationState 
-    -> Elab $ Either String UnificationState
-  tryMergeBuckets a b state
-    = if a == b 
-      then pure $ pure $ state
-      else case (state.buckets `lookup'` a, state.buckets `lookup'` b) of
-        (Just a', Just b') => do
-          let mkBucket = MkBD (union a'.names b'.names)
-          let merge' = mergeIntoAndUpdate a b b'.names.toList
-          let mkNewState = (\x => merge' (mkBucket x) state)
-          case (a'.expr, b'.expr) of
-            (Just ae, Just be) =>
-              unifyOver ae be $ mkNewState $ Just ae
-            (Just ae, Nothing) =>
-              pure $ pure $ mkNewState $ Just ae
-            (Nothing, Just be) =>
-              pure $ pure $ mkNewState $ Just be
-            (Nothing, Nothing) =>
-              pure $ pure $ mkNewState $ Nothing
-        _ => pure $ pure $ state
+  public export
+  liftElab : Elab t -> Unification t
+  liftElab = lift . lift
+
+  public export
+  tryElab : Elaboration m => String -> Elab t -> UnificationT m t
+  tryElab errMsg e = do
+    elabRes <- catch e
+    case elabRes of
+      Nothing => left errMsg
+      Just r => pure r
+
+  public export
+  runUni : Elaboration m => UnificationState -> UnificationT m t -> m (UnificationState, Either String t)
+  runUni s = runStateT s . runEitherT
+
+  public export
+  evalUni : Elaboration m => UnificationState -> UnificationT m t -> m $ Either String t
+  evalUni s = evalStateT s . runEitherT
+
+  unifyExpr : Elaboration m => Tag TTImp -> Tag TTImp -> UnificationT m ()
+
+  tryMergeBuckets : Elaboration m => Nat -> Nat -> UnificationT m ()
+  tryMergeBuckets a b = if a == b then pure () else do
+    state <- get
+    case (lookup a state.buckets, lookup b state.buckets) of
+      (Just a', Just b') => do
+        let mkBucket = MkBD (union a'.names b'.names)
+        let merge' = mergeIntoAndUpdate a b b'.names.toList
+        let mkNewState = (\x => merge' (mkBucket x) state)
+        case (a'.expr, b'.expr) of
+          (Just ae, Just be) => do
+            put $ mkNewState $ Just ae
+            unifyExpr ae be
+          (Just ae, Nothing) =>
+            put $ mkNewState $ Just ae
+          (Nothing, Just be) =>
+            put $ mkNewState $ Just be
+          (Nothing, Nothing) =>
+            put $ mkNewState $ Nothing
+      _ => pure ()
+  
+  tryAddVarEqVar : Elaboration m => Tag Name -> Tag Name -> UnificationT m ()
+  tryAddVarEqVar x y = do
+    state <- get
+    case (lookup x state.nameToBucket, lookup y state.nameToBucket) of
+      (Just n, Just n') => if (n == n') then pure () else tryMergeBuckets n n'
+      (Just n, Nothing) => lift $ modify
+        { nameToBucket $= insert y n
+        , buckets $= updateExisting {names $= insert y} n
+        }
+      (Nothing, Just n) => lift $ modify
+        { nameToBucket $= insert x n
+        , buckets $= updateExisting {names $= insert x} n
+        }
+      (Nothing, Nothing) => lift $ modify $ addNewBucket $ MkBD (fromList [x,y]) empty
+
+  tryAddVarEqExpr : Elaboration m => Tag Name -> Tag TTImp -> UnificationT m ()
+  tryAddVarEqExpr n e = do
+    state <- get
+    case (queryName n state) of
+      Just bd => do
+        let emptiedData = {expr := Just e} bd
+        case bd.expr of
+          Just e' => do
+            modify $ setDataByName n emptiedData
+            unifyExpr e e'
+          Nothing => modify $ setDataByName n emptiedData
+      Nothing => modify $ addNewBucket (MkBD (singleton n) (Just e))
+
+uFail : MonadError String m => TTImp -> TTImp -> String -> m t
+uFail lhs rhs s = throwError "\{s} (when unifying \{show lhs} and \{show rhs})"
+
+parameters {auto uc: UnificationCtx}
+
+  data MyArg = Explicit (Tag TTImp) | Auto (Tag TTImp)
+  
+  Eq MyArg where
+    (==) (Explicit a) (Explicit b) = a == b
+    (==) (Auto a) (Auto b) = a == b
+    (==) _ _ = False
+
+record AppData {auto uc: UnificationCtx} where
+  constructor MkAppData
+  fn : Tag TTImp
+  positionals : List MyArg
+  nameds : SortedMap (Tag Name) (Tag TTImp) 
+  withs : List $ Tag TTImp
+    -- defaults : SortedSet $ Tag TTImp
+
+parameters {auto uc: UnificationCtx}
+
+  addArg : Origin -> AnyApp -> AppData -> AppData
+  addArg o (PosApp s) = {positionals $= (Explicit {uc} (MkTag {uc} o s) ::)}
+  addArg o (NamedApp nm s) = {nameds $= insert (MkTag {uc} o nm) (MkTag {uc} o s)}
+  addArg o (AutoApp s) = {positionals $= (Auto {uc} (MkTag {uc} o s) ::)}
+  addArg o (WithApp s) = {withs $= ((MkTag {uc} o s) ::)}
+
+  unrollIApp : Tag TTImp -> AppData
+  unrollIApp t = do
+    let (fn, args) = Deriving.DepTyCheck.Util.Reflection.unAppAny t.data
+    foldl (flip (addArg t.origin)) (MkAppData (t.same fn) [] empty []) args
+
+  unifyMyArg : Elaboration m => MyArg -> MyArg -> UnificationT m ()
+  unifyMyArg (Explicit x) (Explicit y) = unifyExpr x y
+  unifyMyArg (Auto x) (Auto y) = unifyExpr x y
+  unifyMyArg _ _ = left "IApp unify: explicit argument kind mismatch"
+
+  unifyNameds : Elaboration m => (Tag Name, Tag TTImp) -> (Tag Name, Tag TTImp) -> UnificationT m ()
+  unifyNameds (n, t) (n', t') =
+    if n.data == n'.data
+       then unifyExpr t t'
+       else left "IApp unify: named argument name mismatch"
+
+  unifyAppData : Elaboration m => AppData -> AppData -> UnificationT m ()
+  unifyAppData ad ad' = do
+    if length ad.positionals /= length ad'.positionals
+      then left "IApp unify: positionals length mismatch"
+      else pure ()
+    if (map (.data) (keys ad.nameds)) /= (map (.data) (keys ad'.nameds))
+      then left "IApp unify: nameds keys mismatch"
+      else pure ()
+    if length ad.withs /= length ad'.withs
+      then left "IApp unify: withs length mismatch"
+      else pure ()
+    unifyExpr ad.fn ad'.fn
+    for_ (zip ad.positionals ad'.positionals) $ uncurry unifyMyArg
+    for_ (zip ad.withs ad'.withs) $ uncurry unifyExpr
+    let adNs : List (Tag Name, Tag TTImp) = toList ad.nameds
+    let adNs' : List (Tag Name, Tag TTImp) = toList ad'.nameds
+    for_ (zip adNs adNs') $ uncurry unifyNameds
+    pure ()
 
 
-  tryAddVarEqVar : 
-       WithOrigin Name 
-    -> WithOrigin Name 
-    -> UnificationState 
-    -> Elab $ Either String UnificationState
-  tryAddVarEqVar x y state
-    = do
-      logMsg "unifier" 0 "tryAddVarEqVar"
-      handleBuckets 
-        (state.nameToBucket `lookup'` x) 
-        (state.nameToBucket `lookup'` y)
-      where
-      handleBuckets : 
-           Maybe Nat -> Maybe Nat 
-        -> Elab $ Either String UnificationState
-      handleBuckets (Just n) (Just n') = 
-        if (n == n') 
-          then pure $ pure $ state 
-          else tryMergeBuckets n n' state
-      handleBuckets (Just n) Nothing = 
-        pure $ pure $ 
-          { nameToBucket $= insert y n
-          , buckets $= updateExisting {names $= insert y} n
-          } state
-      handleBuckets (Nothing) (Just n) = 
-        pure $ pure $ 
-          {nameToBucket $= insert x n
-          , buckets $= updateExisting {names $= insert x} n
-          } state
-      handleBuckets Nothing Nothing = 
-        pure $ pure $ addNewBucket (MkBD (fromList [x, y]) empty) state
+  unifyIApp : Elaboration m => Tag TTImp -> Tag TTImp -> UnificationT m ()
+  unifyIApp lhs@(MkTag _ lhs') rhs@(MkTag _ rhs') = do
+    let lData = unrollIApp lhs
+    let rData = unrollIApp rhs
+    unifyAppData lData rData
 
-
-
-  tryAddVarEqExpr : 
-       WithOrigin Name 
-    -> WithOrigin TTImp 
-    -> UnificationState 
-    -> Elab $ Either String UnificationState
-  tryAddVarEqExpr n e state
-    = case (queryName n state) of
-      (Just bd) => case bd.expr of
-        Just e' => do
-          let emptiedData = {expr := Just e} bd
-          let emptiedState = setDataByName n emptiedData state
-          unifyOver e e' emptiedState
-        Nothing => pure $ pure $ setDataByName n ({expr := Just e} bd) state
-      Nothing => pure $ pure $ addNewBucket (MkBD (singleton n) (Just e)) state
-
-
-  unifyImp : TTImp -> TTImp -> String -> Either String t
-  unifyImp lhs rhs s = 
-    Left "\{s} (when unifying \{show lhs} and \{show rhs})"
-
-  unifyImp' : TTImp -> TTImp -> String -> Elab $ Either String t
-  unifyImp' lhs rhs s = 
-    pure $ Left "\{s} (when unifying \{show lhs} and \{show rhs})"
+  tryElab' : Elaboration m => TTImp -> TTImp -> String -> Elab t -> UnificationT m t
+  tryElab' lhs rhs s op = do
+    res <- catch op
+    tquote <- quote op
+    case res of
+      Nothing => throwError "Reflection error when \{s} (\{show tquote}) (when unifying \{show lhs} and \{show rhs})"
+      Just e => pure e
 
   %inline
-  (===) : 
-       {auto state: UnificationState} 
-    -> WithOrigin Name 
-    -> WithOrigin Name 
-    -> Elab $ Either String UnificationState
-  (===) a b = tryAddVarEqVar a b state
+  (===) : Elaboration m => Tag Name -> Tag Name -> UnificationT m ()
+  (===) = tryAddVarEqVar
 
   %inline
-  (:==) : 
-       {auto state: UnificationState} 
-    -> WithOrigin Name 
-    -> WithOrigin TTImp 
-    -> Elab $ Either String UnificationState
-  (:==) a b = tryAddVarEqExpr a b state
+  (:==) : Elaboration m => Tag Name -> Tag TTImp -> UnificationT m ()
+  (:==) = tryAddVarEqExpr
   private infixr 1 :==
 
-  matches : 
-       {auto state: UnificationState} 
-    -> Elab $ Either String UnificationState
-  matches = pure $ pure $ state
+  unifyVars : Elaboration m => Tag TTImp -> Tag TTImp -> UnificationT m ()
+  unifyVars lhs rhs with (lhs.data, rhs.data)
+    unifyVars lhs rhs | (lhs'@(IVar _ nmL), rhs'@(IVar _ nmR))
+      = case (lhs.isFreeVar', rhs.isFreeVar') of
+        (True, True) => lhs.same nmL === rhs.same nmR
+        (True, False) => lhs.same nmL :== rhs
+        (False, True) => rhs.same nmR :== lhs
+        (False, False) => do
+          (_, lhsType) <- tryElab' lhs' rhs' "looking up \{nmL}" $ lookupName nmL
+          (_, rhsType) <- tryElab' lhs' rhs' "looking up \{nmR}" $ lookupName nmR
+          case (lhsType, rhsType) of
+            (IType _, IType _) => do
+              lhs'' : Type <- tryElab' lhs' rhs' "typechecking \{show lhs'}" $ check lhs'
+              rhs'' : Type <- tryElab' lhs' rhs' "typechecking \{show rhs'}" $ check rhs'
+              res <- search (lhs'' = rhs'')
+              case res of
+                Just _ => pure ()
+                Nothing => uFail lhs' rhs' "Can't find proof of type equality between \{show lhs'} and \{show rhs'}"
+            (IType _, rrr) => uFail lhs' rhs' "Can't unify a type with \{show rrr}"
+            (lll, IType _) => uFail lhs' rhs' "Can't unify a type with \{show lll}"
+            (IPi _ _ _ _ _ _, IPi _ _ _ _ _ _ ) =>
+              if (lhsType == rhsType && nmL == nmR) then
+                pure ()
+              else
+                uFail lhs' rhs' "Generic type invocations don't match"
+            (_, _) => uFail lhs' rhs' 
+              "Trying to unify variables with unsupported types: \n (\{show lhs'} : \{show lhsType}) and (\{show rhs'} : \{show rhsType})"
+    unifyVars lhs rhs | (lhs', rhs') = uFail lhs' rhs' "Impossible (unifyVars)"
 
-  unifyOver' : 
-       WithOrigin TTImp 
-    -> WithOrigin TTImp 
-    -> UnificationState 
-    -> Elab $ Either String UnificationState
-  unifyOver' lhs rhs state with (lhs.data, rhs.data)
-    unifyOver' lhs rhs state | (lhs'@(IVar _ nmL), rhs'@(IVar _ nmR))
-      = do
-        unifyVars lhs.isFreeVar' rhs.isFreeVar'
-        where
-        -- Check the result of type equality expr search.
-        checkTypeEq : Maybe t -> Elab $ Either String UnificationState
-        checkTypeEq (Just _) = matches
-        checkTypeEq Nothing = 
-          unifyImp' lhs' rhs' "Can't find proof of type equality"
+  unifyVarOther : Elaboration m => Tag TTImp -> Tag TTImp -> UnificationT m ()
+  unifyVarOther lhs@(MkTag _ (IVar _ nm)) rhs = 
+    if (lhs.isFreeVar')
+      then lhs.same nm :== rhs
+      else uFail lhs.data rhs.data "Trying to unify a non-free variable (\{show nm}) with a non-variable value (\{show rhs.data})"
+  unifyVarOther lhs rhs = uFail lhs.data rhs.data "Impossible (unifyVarOther)"
 
-        -- Unify two variables with known types.
-        unifyWithTypes : TTImp -> TTImp -> Elab $ Either String UnificationState
-        unifyWithTypes (IType _) (IType _) = do
-          lhs'' : Type <- check lhs'
-          rhs'' : Type <- check rhs'
-          res : Maybe (lhs'' = rhs'') <- search (lhs''=rhs'')
-          checkTypeEq res
-        unifyWithTypes (IType _) rrr = unifyImp' lhs' rhs' "Can't unify a type with \{show rrr}"
-        unifyWithTypes lll (IType _) = unifyImp' lhs' rhs' "Can't unify a type with \{show lll}"
-        unifyWithTypes lhsType@(IPi _ _ _ _ _ _ ) rhsType@(IPi _ _ _ _ _ _) =
-          if (lhsType == rhsType && nmL == nmR) then
-            matches
-          else
-            unifyImp' lhs' rhs' "Generic type invocations don't match"
-        unifyWithTypes lhsT rhsT = unifyImp' lhs' rhs' "Trying to unify variables with unsupported types: \n (\{show lhs'} : \{show lhsT}) and (\{show rhs'} : \{show rhsT})"
+  unifyPrim : Elaboration m => Tag TTImp -> Tag TTImp -> UnificationT m ()
+  unifyPrim lhs@(MkTag _ (IPrimVal _ cL)) rhs@(MkTag _ (IPrimVal _ cR)) = 
+    if (cL == cR)
+       then pure ()
+       else uFail lhs.data rhs.data "\{show cL} != \{show cR}"
+  unifyPrim lhs rhs = uFail lhs.data rhs.data "Impossible (unifyPrim)"
 
-        -- Unify non-free variables.
-        unifyNFVars : Elab $ Either String UnificationState
-        unifyNFVars = do
-          (_, lhsType) <- lookupName nmL
-          (_, rhsType) <- lookupName nmR
-          unifyWithTypes lhsType rhsType
+  unifyImpl : Elaboration m => Tag TTImp -> Tag TTImp -> UnificationT m ()
+  unifyImpl lhs rhs with (lhs.data, rhs.data)
+    unifyImpl lhs rhs | (lhs'@(IVar _ nmL), rhs'@(IVar _ nmR))
+      = unifyVars lhs rhs
+    unifyImpl lhs rhs | (lhs'@(IVar _ _), rhs') = unifyVarOther lhs rhs
+    unifyImpl lhs rhs | (lhs', rhs'@(IVar _ _)) = unifyVarOther rhs lhs
+    unifyImpl lhs rhs | (lhs'@(IPrimVal _ _), rhs'@(IPrimVal _ _)) = unifyPrim lhs rhs
+    unifyImpl lhs rhs | (lhs'@(IApp _ _ _), rhs'@(IApp _ _ _)) = unifyIApp lhs rhs
+    unifyImpl lhs rhs | (lhs'@(INamedApp _ _ _ _), rhs'@(INamedApp _ _ _ _)) = unifyIApp lhs rhs
+    unifyImpl lhs rhs | (lhs'@(IWithApp _ _ _), rhs'@(IWithApp _ _ _)) = unifyIApp lhs rhs
+    unifyImpl lhs rhs | (lhs'@(IAutoApp _ _ _), rhs'@(IAutoApp _ _ _)) = unifyIApp lhs rhs
+    unifyImpl lhs rhs | (rhs', lhs') = uFail lhs' rhs' "Unsupported unification"
 
-        -- Unify variables. First arguments correspond to whether a variable is free.
-        unifyVars : Bool -> Bool -> Elab $ Either String UnificationState
-        unifyVars True True = lhs.same nmL === rhs.same nmR
-        unifyVars True False = lhs.same nmL :== rhs
-        unifyVars False True = rhs.same nmR :== lhs
-        unifyVars False False = unifyNFVars
-    unifyOver' lhs rhs state | (lhs'@(IVar _ nm), rhs') = do
-      if (lhs.isFreeVar')
-        then lhs.same nm :== rhs
-        else unifyImp' lhs' rhs' "Trying to unify a variable (\{show nm}) with a dependent value (\{show rhs'})"
-    unifyOver' lhs rhs state | (lhs', rhs'@(IVar _ nm)) = do
-      logMsg "unifier" 0 "IVar on the right"
-      if (rhs.isFreeVar')
-        then do
-          logMsg "unifier" 0 "Same"
-          rhs.same nm :== lhs
-        else do
-          logMsg "unifier" 0 "Not same"
-          unifyImp' lhs' rhs' "Trying to unify a variable (\{show nm}) with a dependent value (\{show lhs'})"
-    unifyOver' lhs rhs state | (lhs'@(IApp _ a b), rhs'@(IApp _ a' b')) = do
-      state' <- unifyOver (lhs.same a) (rhs.same a') state
-      case state' of
-        Left s => pure $ Left s
-        Right s' => do
-          unifyOver (lhs.same b) (rhs.same b') s'
-    unifyOver' lhs rhs state | (lhs'@(IPrimVal _ cL), rhs'@(IPrimVal _ cR)) = do
-      if (cL == cR)
-        then matches
-        else unifyImp' lhs' rhs' $ show cL ++ " != " ++ show cR
-    unifyOver' lhs rhs state | (lhs', rhs') = do
-      unifyImp' lhs' rhs' "Unsupported unification"
-
-  unifyOver lhs rhs state = do
-    logMsg "unifier" 0 "unifyOver \{show lhs} \{show rhs}"
-    unifyOver' lhs rhs state
+  unifyExpr lhs rhs = do
+    unifyImpl lhs rhs 
 
   dumpBucket : BucketData -> String
-  dumpBucket (MkBD names Nothing) = 
-    joinBy " == " $ map show names.toList
-  dumpBucket (MkBD names (Just s)) = 
+  dumpBucket (MkBD names Nothing) =
+    joinBy " == " $ show <$> names.toList
+  dumpBucket (MkBD names (Just s)) =
     joinBy " == " $ map show names.toList ++ [show s]
 
   dumpUState : UnificationState -> String
   dumpUState s = joinBy "\n" $ dumpBucket <$> values s.buckets
-
-tryUnify' : 
-     List Name 
-  -> TTImp 
-  -> List Name 
-  -> TTImp 
-  -> Elab (uc: UnificationContext ** Either String UnificationState)
-tryUnify' ln lhs rn rhs = do
-  let uc = MkUC (fromList ln) lhs (fromList rn) rhs
-  r <- unifyOver (withLeft lhs) (withRight rhs) empty
-  pure (uc ** r)
-
-public export
-%macro
-tryUnify : 
-     List Name 
-  -> TTImp 
-  -> List Name 
-  -> TTImp 
-  -> Elab (uc: UnificationContext ** Either String UnificationState)
-tryUnify = tryUnify'
-
-dumpUnify' : List Name -> TTImp -> List Name -> TTImp -> Elab $ IO ()
-dumpUnify' ln lhs rn rhs = do
-  (uc ** ucr) <- tryUnify' ln lhs rn rhs
-  case ucr of
-    Left e => pure $ putStrLn "Unification error: \{e}"
-    Right s => pure $ putStrLn $ dumpUState s
-
-public export
-%macro
-dumpUnify : List Name -> TTImp -> List Name -> TTImp -> Elab $ IO ()
-dumpUnify = dumpUnify'
-
-fancyDPair : 
-     (uc : UnificationContext ** Either String UnificationState) 
-  -> String
-fancyDPair (uc ** Left e) = "Unification error: \{e}"
-fancyDPair (uc ** Right s) = dumpUState s
-
-dumpDPair : 
-     (uc : UnificationContext ** Either String UnificationState) 
-  -> IO ()
-dumpDPair = putStrLn . fancyDPair
 
 record DependencyGraph where
   constructor MkDG
@@ -476,14 +457,14 @@ addDep a b name =
   addIfExists : Name -> Maybe (SortedSet Name) -> Maybe (SortedSet Name)
   addIfExists n = Just . insert n . fromMaybe empty
 
-  addIfExists' : 
-       Nat -> 
-       Maybe (SortedMap Nat (SortedSet Name)) -> 
+  addIfExists' :
+       Nat ->
+       Maybe (SortedMap Nat (SortedSet Name)) ->
        Maybe (SortedMap Nat (SortedSet Name))
   addIfExists' n = Just . update (addIfExists name) n . fromMaybe empty
 
 delDep : Nat -> Nat -> DependencyGraph -> DependencyGraph
-delDep a b = 
+delDep a b =
   { dependsOn $= update (map (delete b)) a
   , dependedBy $= update (map (delete a)) b
   }
@@ -492,29 +473,29 @@ delDepN : Nat -> Nat -> Name -> DependencyGraph -> DependencyGraph
 delDepN = ?delDepN_rhs
 
 detectCycle1 : Nat -> SortedSet Nat -> DependencyGraph -> Bool
-detectCycle1 idx prev dg = 
-  if contains idx prev 
-    then True 
+detectCycle1 idx prev dg =
+  if contains idx prev
+    then True
     else fromMaybe False $ searchChildBuckets . keys <$> lookup idx dg.dependsOn
   where
   searchChildBuckets : List Nat -> Bool
   searchChildBuckets [] = False
-  searchChildBuckets (child::rest) = 
-    if detectCycle1 child (insert idx prev) dg 
-      then True 
+  searchChildBuckets (child::rest) =
+    if detectCycle1 child (insert idx prev) dg
+      then True
       else searchChildBuckets rest
 
 detectCycleDumb : List Nat -> DependencyGraph -> Bool
 detectCycleDumb [] dg = False
-detectCycleDumb (x :: xs) dg = 
+detectCycleDumb (x :: xs) dg =
   if detectCycle1 x empty dg then True else detectCycleDumb xs dg
 
-parameters {auto uc: UnificationContext}
+parameters {auto uc: UnificationCtx}
   getDepGraph : UnificationState -> DependencyGraph
   getDepGraph state = foldl addBucketDependencies emptyDG $ kvList state.buckets
     where
-    addByName : 
-      SortedSet (Nat, Name) -> WithOrigin Name -> SortedSet (Nat, Name)
+    addByName :
+      SortedSet (Nat, Name) -> Tag Name -> SortedSet (Nat, Name)
     addByName s n with (state.nameToBucket `lookup'` n)
       addByName s n | (Just id) = insert (id, n.data) s
       addByName s n | Nothing = s
@@ -526,9 +507,9 @@ parameters {auto uc: UnificationContext}
         let dep_vars = expr.dependencies
         foldl addByName empty (map expr.same (Prelude.toList dep_vars))
 
-    addBucketDependencies : 
+    addBucketDependencies :
       DependencyGraph -> (Nat, BucketData) -> DependencyGraph
-    addBucketDependencies dg (bId, bucket) = 
+    addBucketDependencies dg (bId, bucket) =
       foldr (\(x,y)=> addDep bId x y) dg $ getBucketDependencies bucket
 
   dumpUStateG : UnificationState -> String
@@ -541,55 +522,55 @@ parameters {auto uc: UnificationContext}
     Just expr.data
 
 
-  subDep : 
-       Nat 
-    -> Nat 
-    -> UnificationState 
-    -> DependencyGraph 
+  subDep :
+       Nat
+    -> Nat
+    -> UnificationState
+    -> DependencyGraph
     -> (UnificationState, DependencyGraph)
   subDep a b state dg with (getContent a state)
     subDep a b state dg | Nothing = (state, dg)
     subDep a b state dg | (Just expr) = do
-      let newState : UnificationState = 
+      let newState : UnificationState =
         {buckets $= updateExisting updateBucket b} state
       let newGraph = delDep b a dg
       (newState, newGraph)
       where
         subName' : Name -> BucketData -> BucketData
-        subName' n = {expr $= map $ mapInner {uc} $ substituteVariable n expr}
+        subName' n = {expr $= map $ map $ substituteVariable n expr}
 
         updateBucket : BucketData -> BucketData
         updateBucket bd =
-          foldr subName' bd 
-            $ fromMaybe empty 
-              $ lookup a 
+          Prelude.foldr subName' bd
+            $ fromMaybe empty
+              $ lookup a
                 =<< lookup b dg.dependsOn
 
-  subLeaf : 
-       Nat 
-    -> UnificationState 
-    -> DependencyGraph 
+  subLeaf :
+       Nat
+    -> UnificationState
+    -> DependencyGraph
     -> (UnificationState, DependencyGraph)
   subLeaf l state dg with (lookup l dg.dependedBy)
     subLeaf l state dg | Nothing = (state, dg)
     subLeaf l state dg | (Just ds) = foldl subOneDep (state, dg) $ keys ds
-      where 
-      subOneDep : 
-           (UnificationState, DependencyGraph) 
-        -> Nat 
+      where
+      subOneDep :
+           (UnificationState, DependencyGraph)
+        -> Nat
         -> (UnificationState, DependencyGraph)
       subOneDep (s, g) n = subDep l n s g
 
-  subLeaves : 
-       List Nat 
-    -> UnificationState 
-    -> DependencyGraph 
+  subLeaves :
+       List Nat
+    -> UnificationState
+    -> DependencyGraph
     -> (UnificationState, DependencyGraph)
   subLeaves leaves st dg = foldl subOneLeaf (st, dg) leaves
     where
-    subOneLeaf : 
-         (UnificationState, DependencyGraph) 
-      -> Nat 
+    subOneLeaf :
+         (UnificationState, DependencyGraph)
+      -> Nat
       -> (UnificationState, DependencyGraph)
     subOneLeaf (s,g) l = subLeaf l s g
 
@@ -601,35 +582,35 @@ isLeaf n dg = isDependedOn && hasNoChildren
 
   hasNoChildren : Bool
   hasNoChildren = fromMaybe True $ (== empty) <$> lookup n dg.dependsOn
-  
+
 findLeaves : List Nat -> DependencyGraph -> List Nat
 findLeaves nodes dg = filter (flip isLeaf dg) nodes
 
-parameters {auto uc: UnificationContext}
-  fillIn : 
-       UnificationState 
-    -> DependencyGraph 
+parameters {auto uc: UnificationCtx}
+  fillIn :
+       UnificationState
+    -> DependencyGraph
     -> (UnificationState, DependencyGraph)
   fillIn state dg = do
     let leaves = findLeaves (keys state.buckets) dg
-    case leaves of 
+    case leaves of
       [] => (state, dg)
       leaves => do
         let (nState, nDg) = subLeaves leaves state dg
         fillIn nState nDg
 
-  fillInOnce : 
-       UnificationState 
-    -> DependencyGraph 
+  fillInOnce :
+       UnificationState
+    -> DependencyGraph
     -> (UnificationState, DependencyGraph)
   fillInOnce state dg = do
     let leaves = findLeaves (keys state.buckets) dg
-    case leaves of 
+    case leaves of
       [] => (state, dg)
       leaves => do
         subLeaves leaves state dg
 
-  consolidateUState : 
+  consolidateUState :
     UnificationState -> (SortedMap Name TTImp, SortedMap Name TTImp)
   consolidateUState ustate = do
     let dg = getDepGraph ustate
@@ -638,111 +619,30 @@ parameters {auto uc: UnificationContext}
     let rhs_r = foldl (searchNameByOrigin ns Right) empty uc.rhsVars
     (lhs_r, rhs_r)
     where
-      searchNameByOrigin : 
-           UnificationState 
-        -> Origin 
+      searchNameByOrigin :
+           UnificationState
+        -> Origin
         -> SortedMap Name TTImp -> Name -> SortedMap Name TTImp
       searchNameByOrigin ust o sm n = fromMaybe sm found
-        where 
+        where
         found : Maybe $ SortedMap Name TTImp
         found = do
-          bid <- lookup (MkOriginData o n) ust.nameToBucket
+          bid <- lookup (MkTag o n) ust.nameToBucket
           bd <- lookup bid ust.buckets
           expr <- bd.expr
           Just $ insert n expr.data sm
-  
-testCUS' : 
-     List Name 
-  -> TTImp 
-  -> List Name 
-  -> TTImp 
-  -> Elab (SortedMap Name TTImp, SortedMap Name TTImp)
-testCUS' lhsVars lhs rhsVars rhs = do
-  logMsg "unifier" 0 "Unifying (\{show lhsVars}) => \{show lhs} and (\{show rhsVars}) => \{show rhs}"
-  (uc ** ustate) <- tryUnify' lhsVars lhs rhsVars rhs
-  handleState ustate
-  where
-  handleState : 
-       {auto uc : UnificationContext} 
-    -> Either String UnificationState 
-    -> Elab (SortedMap Name TTImp, SortedMap Name TTImp) 
-  handleState (Left e) = do
-    logMsg "unifier" 0 "Unification error: \{e}"
-    pure (empty, empty)
-  handleState (Right ustate) = do
-    logMsg "unifier" 0 "Unification state: \n\{dumpUState ustate}"
-    let (lhsR, rhsR) = consolidateUState ustate
-    logMsg "unifier" 0 "LHS variables: \{show lhsR}"
-    logMsg "unifier" 0 "RHS variables: \{show rhsR}"
-    pure (lhsR, rhsR)
 
-testFI' : 
-     List Name 
-  -> TTImp 
-  -> List Name 
-  -> TTImp 
-  -> Elab (uc : UnificationContext ** (Either String UnificationState))
-testFI' lhsVars lhs rhsVars rhs = do
-  logMsg "unifier" 0 "Unifying (\{show lhsVars}) => \{show lhs} and (\{show rhsVars}) => \{show rhs}"
-  (uc ** ustate) <- tryUnify' lhsVars lhs rhsVars rhs
-  state' <- handleState ustate
-  pure (uc ** state')
-  where
-  handleState : 
-       {auto uc : UnificationContext} 
-    -> Either String UnificationState 
-    -> Elab $ Either String UnificationState
-  handleState (Left e) = do
-    logMsg "unifier" 0 "Unification error: \{e}"
-    pure $ Left e
-  handleState (Right ustate) = do
-    logMsg "unifier" 0 "Unification state: \n\{dumpUState ustate}"
-    let dg = getDepGraph ustate
-    logMsg "unifier" 0 "Dependency graph: \{show dg}"
-    let (ns, ndg) = fillInOnce ustate dg
-    logMsg "unifier" 0 "Filled in state: \n\{dumpUState ns}"
-    logMsg "unifier" 0 "Filled in dg: \n\{show ndg}"
-    pure $ Right ns
-
-fancyDPairG : 
-  (uc : UnificationContext ** Either String UnificationState) -> String
-fancyDPairG (uc ** Left e) = "Unification error: \{e}"
-fancyDPairG (uc ** Right s) = dumpUStateG s
-
-dumpDPairG : 
-  (uc : UnificationContext ** Either String UnificationState) -> IO ()
-dumpDPairG = putStrLn . fancyDPairG
-
-dumpUnifyG' : List Name -> TTImp -> List Name -> TTImp -> Elab $ IO ()
-dumpUnifyG' ln lhs rn rhs = do
-  (uc ** result) <- tryUnify' ln lhs rn rhs
-  case result of
-    Left e => pure $ putStrLn "Unification error: \{e}"
-    Right s => pure $ putStrLn $ dumpUStateG s
-
-%macro
-dumpUnifyG : List Name -> TTImp -> List Name -> TTImp -> Elab $ IO ()
-dumpUnifyG = dumpUnifyG'
-
-public export
-%macro
-testFI : 
-     List Name -> TTImp -> List Name -> TTImp 
-  -> Elab (uc : UnificationContext ** (Either String UnificationState))
-testFI = testFI'
 
 
 public export
-%macro
-testCUS : 
-     List Name -> TTImp -> List Name -> TTImp 
-  -> Elab (SortedMap Name TTImp, SortedMap Name TTImp)
-testCUS = testCUS'
+doUnification' : (uc : UnificationCtx) -> Unification $ (SortedMap Name TTImp, SortedMap Name TTImp)
+doUnification' uc = do
+  unifyExpr (tagLeft uc.lhs) (tagRight uc.rhs)
+  state <- get
+  pure $ consolidateUState state
 
 public export
-runUnification :
-     List Name -> TTImp -> List Name -> TTImp 
-  -> Elab $ Either String (SortedMap Name TTImp, SortedMap Name TTImp)
-runUnification lhsVars lhs rhsVars rhs = do
-  (uc ** ustate) <- tryUnify' lhsVars lhs rhsVars rhs
-  pure $ consolidateUState <$> ustate
+doUnification : List Name -> TTImp -> List Name -> TTImp -> Elab $ Either String (SortedMap Name TTImp, SortedMap Name TTImp)
+doUnification lhsV lhs rhsV rhs = do
+  let uc = MkUC lhs (fromList lhsV) rhs (fromList rhsV)
+  evalUni empty $ doUnification' uc

@@ -9,8 +9,8 @@ import Language.Reflection.Monomorphisation
 -- t : ()
 -- t = %runElab monoVariant "List" [Just (Type ** String)] "ListString"
 
--- -- ls : ListString
--- -- ls =  ["1", "2", "3"]
+-- ls : ListString
+-- ls =  ["1", "2", "3"]
 
 -- %runElab monoVariant "Vect" [Nothing, Just (Type ** String)] "Vect_String"
 

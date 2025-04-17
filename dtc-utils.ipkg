@@ -22,7 +22,7 @@ modules = Language.Reflection.VarSubst
         , Language.Reflection.Unification       
         , Language.Reflection.Monomorphisation
 
-depends = elab-util, elab-pretty, prettier
+depends = elab-util, elab-pretty, prettier, deptycheck
 
 -- main file (i.e. file to load at REPL)
 -- main =
