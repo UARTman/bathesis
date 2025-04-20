@@ -394,8 +394,11 @@ parameters {auto uc: UnificationCtx}
                 pure ()
               else
                 uFail lhs' rhs' "Generic type invocations don't match"
-            (_, _) => uFail lhs' rhs' 
-              "Trying to unify variables with unsupported types: \n (\{show lhs'} : \{show lhsType}) and (\{show rhs'} : \{show rhsType})"
+            (_, _) =>
+              if (lhsType == rhsType && lhs' == rhs') then
+                pure ()
+              else 
+                uFail lhs' rhs' "Trying to unify variables with unsupported types: \n (\{show lhs'} : \{show lhsType}) and (\{show rhs'} : \{show rhsType})"
     unifyVars lhs rhs | (lhs', rhs') = uFail lhs' rhs' "Impossible (unifyVars)"
 
   unifyVarOther : Elaboration m => Tag TTImp -> Tag TTImp -> UnificationT m ()

@@ -5,7 +5,7 @@ import Language.Reflection.Monomorphisation
 %language ElabReflection
 
 
-%runElab monoVariant "List" [Just (Type ** Nat)] "ListNat"
+%runElab monomorphise (List Nat) "ListNat"
 
 ln : ListNat
 ln = [1,2,3]

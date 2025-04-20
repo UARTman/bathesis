@@ -22,231 +22,371 @@ import public Text.PrettyPrint.Bernardy.Interface
 import public Text.PrettyPrint.Bernardy.Core
 import public Language.Reflection.Unification
 
--- %default total
 %language ElabReflection
 
-%logging "unifier" 0
--- %auto_lazy off
+public export
+interface TypeTask (t : Type) where
 
+public export
+TypeTask Type
 
-verifyZippedArgs : (Maybe Name, (Maybe Type, Maybe (t : Type ** t))) -> Elab ()
-verifyZippedArgs (_, (_, Nothing)) = pure ()
-verifyZippedArgs (_, (Nothing, _)) = pure ()
-verifyZippedArgs (n, (Just x, (Just ((fst ** snd))))) = do
-  r : Maybe x <- catch $ check !(quote snd)
-  let n' = fromMaybe "<unnamed>" n
-  case r of
-    Just x => pure ()
-    Nothing => failAt (getFC !(quote fst)) $
-      "Wrong type of value given for argument " ++ show n' ++
-      ". Got " ++ show !(quote fst) ++
-      " while expecting " ++ show !(quote x) ++ "."
-  pure ()
+public export
+TypeTask b => TypeTask (a -> b)
 
-verifyZippedArgs' : (Arg, (t: Type ** t)) -> Elab ()
-verifyZippedArgs' (arg, (givenTy ** val)) = do
-  realParamTy : Type <- check arg.type
-  typesMatch <- catch $ search (givenTy = realParamTy)
-  givenTyQ <- quote givenTy
-  let aName = fromMaybe "<unnamed>" arg.name
-  case typesMatch of
-    Just _ => pure ()
-    Nothing => failAt (getFC !(quote givenTy)) "Wrong type fo value given for argument \{aName}. Got \{show givenTyQ} instead of \{show arg.type}."
-  pure ()
+logDebug : String -> Elab ()
+logDebug = logMsg "monomorphiser" 1
 
+logTrace : String -> Elab ()
+logTrace = logMsg "monomorphiser" 2
 
-validateTypeInvocation : TTImp -> Elab ()
-validateTypeInvocation expr = do
-  logMsg "monomorphiser" 0 "Validating \{show expr}"
-  let (tname_ttimp, args) = unApp expr
-  validateNamed tname_ttimp args
-  
+taskToInvocation : TTImp -> Elab TTImp
+taskToInvocation (ILam _ _ _ _ _ r) = taskToInvocation r
+taskToInvocation x@(IApp _ _ _) = pure x
+taskToInvocation x@(INamedApp _ _ _ _) = pure x
+taskToInvocation x@(IAutoApp _ _ _) = pure x
+taskToInvocation x@(IWithApp _ _ _) = pure x
+taskToInvocation x@(IVar _ _) = pure x
+taskToInvocation x = failAt (getFC x) "Failed to extract invocation from lambda"
+
+getTName : TTImp -> Elab Name
+getTName (IVar _ n) = pure n
+getTName t = failAt (getFC t) "Couldn't get type name"
+
+freeVarsLambda : TTImp -> SortedSet Name
+freeVarsLambda (ILam _ _ _ (Just n) _ r) = insert n $ freeVarsLambda r
+freeVarsLambda (ILam _ _ _ Nothing _ r) = freeVarsLambda r
+freeVarsLambda _ = empty
+
+unfreeVarsNamed : List AnyApp -> SortedSet Name
+unfreeVarsNamed [] = empty
+unfreeVarsNamed ((NamedApp nm s) :: xs) = insert nm $ unfreeVarsNamed xs
+unfreeVarsNamed (_ :: xs) = unfreeVarsNamed xs
+
+data PosArg = ExplArg TTImp | AutoArg TTImp
+
+%runElab derive "PosArg" [Show, Eq]
+
+record AppData where
+  constructor MkAppData
+  fn : TTImp
+  positional : List PosArg
+  named : SortedMap Name TTImp 
+  withs : List TTImp
+
+%runElab derive "AppData" [Show, Eq]
+
+extractAppData : TTImp -> AppData
+extractAppData t = extract' $ Reflection.unAppAny t
   where
-    validateAppArgs : {auto tps: Vect l Arg} -> Either String (AppArgs tps, TTImp) -> Elab ()
-    validateAppArgs (Left err) = fail err
-    validateAppArgs {tps=tps} (Right (appArgs, remainder)) = do
-      -- logMsg "monomorphiser" 0 "appArgs = \{show appArgs}"
-      logMsg "monomorphiser" 0 "remainder = \{show remainder}"
-      pure ()
+    extract' : (TTImp, List AnyApp) -> AppData
+    extract' (fn, []) = MkAppData fn [] empty []
+    extract' (fn, ((PosApp s) :: xs)) = {positional $= (ExplArg s ::)} $ extract' (fn, xs)
+    extract' (fn, ((NamedApp nm s) :: xs)) = {named $= insert nm s} $ extract' (fn, xs)
+    extract' (fn, ((AutoApp s) :: xs)) = {positional $= (AutoArg s ::)} $ extract' (fn, xs)
+    extract' (fn, ((WithApp s) :: xs)) = {withs $= (s ::)} $ extract' (fn, xs)
 
-    validateNamed : TTImp -> List TTImp -> Elab ()
-    validateNamed (IVar _ tname) args = do
-      -- Get the type of monomorphised type
-      (_, tty) <- lookupName tname
-      logMsg "monomorphiser" 0 $ "Type invoked signature: \{show tty}"
-      -- Extract the type parameters
-      let (typeParams, typeReturn) = unPi tty
-      -- Check if it's even a type
-      if typeReturn == `(Type) then pure () else do
-        fail "Can't monomorphise \{tname} because it isn't a type and is instead \{show tty}."
+isPositional' : AnyApp -> Bool
+isPositional' (PosApp s) = True
+isPositional' (NamedApp nm s) = False
+isPositional' (AutoApp s) = True
+isPositional' (WithApp s) = False
 
-      let tps : Vect _ Arg = fromList typeParams
-      let appArgs = getArgs tps expr
+isPositional : Arg -> Bool
+isPositional (MkArg count ImplicitArg name type) = False
+isPositional (MkArg count ExplicitArg name type) = True
+isPositional (MkArg count AutoImplicit name type) = True
+isPositional (MkArg count (DefImplicit x) name type) = False
 
-      validateAppArgs appArgs
+freeVarsApp : AppData -> Types.TypeInfo -> SortedSet Name
+freeVarsApp ad tinfo = do
+  let tinfo_tuplist = toList $ zip tinfo.args tinfo.argNames
+  let tuplistPos = filter (\(x, n) => isPositional x) tinfo_tuplist
+  let tuplistNamed = filter (\(x, n) => not $ isPositional x) tinfo_tuplist
+  let tlNames : SortedSet Name = fromList $ map snd $ tuplistNamed
+  let unfreeNames : SortedSet Name = fromList $ keys ad.named
+  let freePositional = fromList $ map snd $ drop (length ad.positional) tuplistPos
+  flip difference unfreeNames $ union freePositional tlNames
 
-      pure ()
-    validateNamed tn _ = fail "\{show tn} is not a type name."
+freeVars'' : TTImp -> AppData -> Types.TypeInfo -> SortedSet Name
+freeVars'' t ad ti = union (freeVarsLambda t) $ freeVarsApp ad ti
 
---%runElab validateTypeInvocation `(Vect 5 a)
+traverseTupList : List (Arg, Name) -> (SortedMap Name TTImp, List TTImp)
+traverseTupList [] = (empty, [])
+traverseTupList (((MkArg _ ImplicitArg _ _), nm) :: xs) = 
+  let
+    (named, positionals) = traverseTupList xs
+  in (insert nm (IVar emptyFC nm) named, positionals)
+traverseTupList (((MkArg _ ExplicitArg _ _), nm) :: xs) = 
+  let
+    (named, positionals) = traverseTupList xs
+  in (named, IVar emptyFC nm :: positionals)
+traverseTupList (((MkArg _ AutoImplicit _ _), nm) :: xs) =   
+  let
+    (named, positionals) = traverseTupList xs
+  in (insert nm (IVar emptyFC nm) named, positionals)
+traverseTupList (((MkArg _ (DefImplicit x) _ _), nm) :: xs) =
+  let
+    (named, positionals) = traverseTupList xs
+  in (insert nm ?x_replaced named, positionals)
 
--- %runElab validateTypeInvocation `(MkTag @{uc} Left 10)
+getExplicits : AppData -> List TTImp
+getExplicits ad = ge ad.positional
+  where
+    ge : List PosArg -> List TTImp
+    ge [] = []
+    ge ((ExplArg s) :: xs) = s :: ge xs
+    ge ((AutoArg s) :: xs) = ge xs
 
-||| Handle absent name by generating unique name
-makeArgName : Maybe Name -> Elab Name
-makeArgName Nothing = genSym "n"
-makeArgName (Just n) = pure n
+fINamed : TTImp -> List (Name, TTImp) -> TTImp
+fINamed t [] = t
+fINamed t ((n, a) :: xs) = INamedApp emptyFC (fINamed t xs) n a
 
-||| Create a type invocation in style of compiler-provided ones based on argument's PiInfo and name
-makeLHSApp : PiInfo TTImp -> Maybe Name -> TTImp -> TTImp -> TTImp
-makeLHSApp ExplicitArg _ f x = IApp emptyFC f x
-makeLHSApp _ Nothing f x = IAutoApp emptyFC f x
-makeLHSApp _ (Just n) f x = INamedApp emptyFC f n x
+traverseTupList' : List (Arg, Name) -> (SortedMap Name TTImp, List Name)
+traverseTupList' [] = (empty, [])
+traverseTupList' (((MkArg _ ImplicitArg _ _), nm) :: xs) = 
+  let
+    (named, positionals) = traverseTupList' xs
+  in (insert nm (IVar emptyFC nm) named, positionals)
+traverseTupList' (((MkArg _ ExplicitArg _ _), nm) :: xs) = 
+  let
+    (named, positionals) = traverseTupList' xs
+  in (named, nm :: positionals)
+traverseTupList' (((MkArg _ AutoImplicit _ _), nm) :: xs) =   
+  let
+    (named, positionals) = traverseTupList' xs
+  in (insert nm (IVar emptyFC nm) named, positionals)
+traverseTupList' (((MkArg _ (DefImplicit x) _ _), nm) :: xs) =
+  let
+    (named, positionals) = traverseTupList' xs
+  in (insert nm ?x_replaced_2 named, positionals)
 
-||| Given a typename and an inverse list of argument data, produce a unification LHS (free variables and a type invocation)
-makeUnifyLHS : Name -> SnocList (Arg, Maybe (t : Type ** t)) -> Elab (List Name, TTImp)
-makeUnifyLHS typename [<] = pure ([], IVar EmptyFC typename)
-makeUnifyLHS typename (sx :< ((MkArg _ (DefImplicit def) name _), Nothing)) = do
-  (names, rest) <- makeUnifyLHS typename sx
-  let app = makeLHSApp (DefImplicit def) name rest def
-  pure (names, app)
-makeUnifyLHS typename (sx :< ((MkArg _ piInfo name _), Nothing)) = do
-  freeName <- genSym "x"
-  (names, rest) <- makeUnifyLHS typename sx
-  pure (freeName :: names, makeLHSApp piInfo name rest (IVar emptyFC freeName))
-makeUnifyLHS typename (sx :< ((MkArg _ piInfo name _), (Just (t ** arg)))) = do
-  quotedArg <- quote arg 
-  (names, rest) <- makeUnifyLHS typename sx
-  pure (names, makeLHSApp piInfo name rest quotedArg)
+acc_positionals : SortedMap Name Name -> (TTImp, Name) -> SortedMap Name Name
+acc_positionals a (IVar _ n, n') = insert n n' a
+acc_positionals a _ = a
 
-appArgsToList : (ngs : Vect argn Arg) -> AppArgs ngs -> List (arg: Arg ** AppArg arg)
-appArgsToList [] [] = []
-appArgsToList (x :: xs) (y :: ys) = (x ** y) :: appArgsToList xs ys
+acc_nameds : SortedMap Name Name -> (Name, TTImp) -> SortedMap Name Name
+acc_nameds a (n', IVar _ n) = insert n n' a
+acc_nameds a _ = a
 
-snocArgsToUnifyRHS : Name -> SnocList (arg: Arg ** AppArg arg) -> TTImp
-snocArgsToUnifyRHS nm [<] = IVar EmptyFC nm
-snocArgsToUnifyRHS nm (sx :< ((_ ** snd))) = appArg (snocArgsToUnifyRHS nm sx) snd
+aliases : AppData -> Types.TypeInfo -> SortedMap Name Name
+aliases ad tinfo = do
+  let (tyNamed, tyPositional) = traverseTupList' $ toList $ zip tinfo.args tinfo.argNames
+  let explicits = getExplicits ad
+  let a = foldl acc_positionals empty $ zip explicits tyPositional
+  let b = foldl acc_nameds a $ SortedMap.toList ad.named
+  b
+  
 
-||| Find free variables in constructor's return type
-conArgsToFreeVars : Con n vs -> List Name
-conArgsToFreeVars (MkCon name arty args typeArgs) = do
-  let (fn ** filtered) = filter (\x => isJust x.name) args
-  toList . map (\x => fromMaybe "" x.name) $ filtered
+fullInvocation' : AppData -> Types.TypeInfo -> TTImp
+fullInvocation' ad tinfo = do
+  let (tyNamed, tyPositional) = traverseTupList $ toList $ zip tinfo.args tinfo.argNames
+  let explicits = getExplicits ad
+  let fullExplicits = explicits ++ (drop (length explicits) tyPositional)
+  let fullNamed = mergeWith (\_,a=>a) tyNamed ad.named
+  let nameApplied = fINamed ad.fn (toList fullNamed)
+  foldl app nameApplied fullExplicits
 
-||| Generate a unification RHS (free variables and a generic type invocation) for a given constructor and typename
-conToUnifyRHS : Name -> (vs : Vect n Arg) => Con n vs -> (List Name, TTImp)
-conToUnifyRHS nm @{vs} x = (conArgsToFreeVars x, snocArgsToUnifyRHS nm $ cast $ appArgsToList vs x.typeArgs)
+record TaskData where
+  constructor MkTaskData
+  taskQuote : TTImp
+  taskQuoteType : TTImp
+  typeName : Name
+  outputName : Name
+  outputInvocation : TTImp
+  appData : AppData
+  typeInfo : Types.TypeInfo
+  freeVars : SortedSet Name
+  fullInvocation : TTImp
 
-||| Evaluate TTImp to type, allowing for holes
-checkExceptHole : TTImp -> Elab (Maybe Type)
-checkExceptHole (IHole _ _) = pure Nothing
-checkExceptHole t = pure $ Just !(check t)
+Show Types.TypeInfo where
+  show ti = "<typeinfo>"
 
-||| Remove specified variables from a dependent function signature 
-|||
-||| TODO: Check for bizarre dependent type failures (removed argument used in other argument's type signature)
-reduceArgs : TTImp -> List (Maybe x) -> TTImp
-reduceArgs x [] = x
-reduceArgs (IPi fc c pt mn argTy retTy) (Nothing :: xs) = IPi fc c pt mn argTy $ reduceArgs retTy xs
-reduceArgs (IPi fc c pt mn argTy retTy) (Just _ :: xs) = reduceArgs retTy xs
-reduceArgs x _ = x
+%runElab derive "TaskData" [Show]
 
-||| Restore AppArgs into a function call, ignoring specified variables
-|||
-||| Useful in generating constructors
-restoreApp : AppArgs vs -> List (Maybe x) -> TTImp -> TTImp
-restoreApp [] xs s = s
-restoreApp (y :: z) [] s = s
-restoreApp (y :: z) (Nothing :: xs) s = appArg (restoreApp z xs s) y
-restoreApp (y :: z) ((Just w) :: xs) s = restoreApp z xs s
+restoreApp : Name -> SnocList Arg -> TTImp
+restoreApp nm [<] = IVar EmptyFC nm
+restoreApp nm (sx :< (MkArg count ExplicitArg name type)) = 
+  IApp emptyFC (restoreApp nm sx) $ IVar EmptyFC $ fromMaybe "n" name
+restoreApp nm (sx :< (MkArg count _ name type)) = 
+  INamedApp emptyFC (restoreApp nm sx) (fromMaybe "n" name) $ IVar EmptyFC $ fromMaybe "n" name
 
+restoreApp' : Name -> SnocList Arg -> TTImp
+restoreApp' nm [<] = IVar EmptyFC nm
+restoreApp' nm (sx :< (MkArg count ExplicitArg name type)) = 
+  IApp emptyFC (restoreApp' nm sx) $ IVar EmptyFC $ fromString $ nameStr $ fromMaybe "n" name
+restoreApp' nm (sx :< (MkArg count _ name type)) = 
+  INamedApp emptyFC (restoreApp' nm sx) (fromMaybe "n" name) $ IVar EmptyFC $ fromString $ nameStr $ fromMaybe "n" name
+
+
+
+restoreBind : Name -> SnocList Arg -> TTImp
+restoreBind nm [<] = IVar EmptyFC nm
+restoreBind nm (sx :< (MkArg count ExplicitArg name type)) = 
+  IApp emptyFC (restoreBind nm sx) $ IBindVar EmptyFC $ nameStr $ fromMaybe "n" name
+restoreBind nm (sx :< (MkArg count _ name type)) = 
+  INamedApp emptyFC (restoreBind nm sx) (fromMaybe "n" name) $ IBindVar EmptyFC $ nameStr $ fromMaybe "n" name
+  
+getTaskData : TypeTask l => l -> Name -> Elab TaskData
+getTaskData l' outputName = do
+  taskQuote <- quote l'
+  taskQuoteType <- quote l
+  invocation <- taskToInvocation taskQuote
+  let appData = extractAppData invocation
+  typeName <- getTName appData.fn
+  typeInfo <- Types.getInfo' typeName
+  let freeVars = freeVars'' taskQuote appData typeInfo
+  let fullInvocation = fullInvocation' appData typeInfo
+  let outputInvocation = restoreApp outputName $ cast $ fst $ unPi taskQuoteType
+  pure $ MkTaskData 
+    { taskQuote
+    , taskQuoteType
+    , typeName
+    , outputName
+    , outputInvocation
+    , appData
+    , typeInfo
+    , freeVars
+    , fullInvocation
+    }
+
+conInvocation : Con na va -> Elab (List Name, TTImp)
+conInvocation con = do
+  (_, conSig) <- lookupName con.name
+  let (conArgs, conRetTy) = unPi conSig
+  let conArgNames = mapMaybe (.name) conArgs
+  pure (conArgNames, conRetTy)
+
+unifyCon : TaskData -> Con na va -> Elab $ Either String (SortedMap Name TTImp, SortedMap Name TTImp)
+unifyCon td con = do
+  (conArgNames, conRetTy) <- conInvocation con
+  let freeVars' = Prelude.toList td.freeVars
+  logDebug $ joinBy "\n" 
+    [ "For constructor \{show con.name}:"
+    , "Unifying \{show freeVars'} : \{show td.fullInvocation}"
+    , "     and \{show conArgNames} : \{show conRetTy}"
+    ]
+  doUnification freeVars' td.fullInvocation conArgNames conRetTy
+
+subInArgs' : SortedMap Name TTImp -> SortedMap Name TTImp -> List Arg -> List Arg
+subInArgs' _ _ [] = []
+subInArgs' vMap inScope ((MkArg _ _ Nothing _) :: xs) = 
+  subInArgs' vMap inScope xs
+subInArgs' vMap inScope ((MkArg count piInfo (Just nm) type) :: xs) = 
+  case lookup nm vMap of
+    Just t => subInArgs' vMap (insert nm t inScope) xs
+    Nothing => 
+      (MkArg count piInfo (Just nm) (substituteVariables inScope type)) 
+        :: subInArgs' vMap inScope xs
 
 ||| Remove specified arguments from a list, substituting them everywhere else.
-|||
-||| TODO: this may lead to nasty collisions, new version should ideally take order of args into account
 subInArgs : SortedMap Name TTImp -> List Arg -> List Arg
-subInArgs vMap = map {type $= substituteVariables vMap} . filter (\x => isNothing $ lookup' vMap =<< x.name)
+subInArgs vMap = subInArgs' vMap empty
 
-||| Generate a single constructor ITy value
-produceConstructor : Name -> List (Maybe dp) -> (Con aty cas, SortedMap Name TTImp) -> ITy 
-produceConstructor outputName args (con, vMap) = do
-  --- Generate a monomorphic type invocation from constructor's type args and specified arg data
-  let retur = restoreApp con.typeArgs args $ IVar emptyFC outputName
-  --- Generate a function signature for the constructor
-  --- TODO: check what happens when it runs into implicits
-  let pa' = piAll (substituteVariables vMap retur) $ subInArgs vMap $ toList con.args
-  --- Produce a type 
-  mkTy (fromString con.name.nameStr) pa'
+monoConSig : TaskData -> Con na va -> (SortedMap Name TTImp, SortedMap Name TTImp) -> TTImp
+monoConSig td con (leftS, rightS) = do
+  let retType = substituteVariables leftS td.outputInvocation
+  piAll retType $ subInArgs rightS $ toList con.args
 
-||| Generate a list of constructor ITy values
-produceConstructors : Name -> List (Maybe (t : Type ** t)) -> List (Con aty cas, Either String $ (SortedMap Name TTImp, SortedMap Name TTImp)) -> List ITy
-produceConstructors _ _ [] = []
-produceConstructors n args ((con, Left _) :: xs) = produceConstructors n args xs
-produceConstructors n args ((con, Right (_, sm)) :: xs) = produceConstructor n args (con, sm) :: produceConstructors n args xs
+monoConstructor : TaskData -> Con na va -> Either String (SortedMap Name TTImp, SortedMap Name TTImp) -> Elab $ Maybe ITy
+monoConstructor td con (Right (leftS, rightS)) =
+  pure $ Just $ mkTy (dropNS con.name) $ monoConSig td con (leftS, rightS)
+monoConstructor _ _ _ = pure $ Nothing
 
-||| Perform a unification task
-runUniTask : (List Name, TTImp) -> (List Name, TTImp) -> Elab $ Either String $ (SortedMap Name TTImp, SortedMap Name TTImp)
-runUniTask (freeLHS, lhs) (freeRHS, rhs) = doUnification freeLHS lhs freeRHS rhs
+monoTypeDeclaration : TaskData -> List (Either String (SortedMap Name TTImp, SortedMap Name TTImp)) -> Elab Decl
+monoTypeDeclaration td uniRs = do
+  let l = zip (toList td.typeInfo.cons) uniRs
+  conITys <- traverse (uncurry $ monoConstructor td) l
+  let conITys' = mapMaybe id conITys
+
+  pure $ iData Public td.outputName td.taskQuoteType [] conITys'
+
+rewireIPi : TTImp -> TTImp -> TTImp
+rewireIPi (IPi fc count pinfo mn arg ret) y = IPi fc count pinfo mn arg $ rewireIPi ret y
+rewireIPi x y = y
+
+rewireIPiImplicit : TTImp -> TTImp -> TTImp
+rewireIPiImplicit (IPi fc count pinfo mn arg ret) y = IPi fc count ImplicitArg mn arg $ rewireIPiImplicit ret y
+rewireIPiImplicit x y = y
+
+castToPolySig : TaskData -> TTImp
+castToPolySig td =
+  rewireIPiImplicit td.taskQuoteType `(Cast ~(td.outputInvocation) ~(td.fullInvocation))
+
+implToPolySig : TaskData -> TTImp
+implToPolySig td = 
+  rewireIPiImplicit td.taskQuoteType `(~(td.outputInvocation) -> ~(td.fullInvocation))
+
+implToPolyClause : Name -> TaskData -> (Con vs cs, TTImp, Either String (SortedMap Name TTImp, SortedMap Name TTImp)) -> Maybe Clause
+implToPolyClause nm td (con, conInv, Left _) = Nothing
+implToPolyClause nm td (con, conInv, Right (subL, subR)) = do
+  let conSig = monoConSig td con (subL, subR)
+  let (a, b) = unPi conSig
+  let monoInv = IApp emptyFC (IVar emptyFC nm) $ restoreBind (dropNS con.name) $ cast a
+  let (a', b') = unPi conInv
+  let conInv' = substituteVariables subR $ restoreApp' con.name $ cast a'
+  Just $ PatClause emptyFC monoInv conInv'
+
+implToPolyDef : Name -> TaskData -> List (Con vs cs, TTImp, Either String (SortedMap Name TTImp, SortedMap Name TTImp)) -> Decl
+implToPolyDef nm td lcons = IDef emptyFC nm $ mapMaybe (implToPolyClause nm td) lcons
+
+castDef : Name -> Name -> Decl
+castDef n n' = IDef emptyFC n $ singleton $ PatClause emptyFC (IVar emptyFC n) `(MkCast ~(IVar emptyFC n'))
+
+fnClaim : Name -> TTImp -> Decl
+fnClaim nm = 
+  IClaim . MkFCVal EmptyFC .
+    MkIClaimData MW Private [] .
+      MkTy EmptyFC (MkFCVal EmptyFC nm)
+
+interfaceClaim : Name -> TTImp -> Decl
+interfaceClaim nm = 
+  IClaim . MkFCVal EmptyFC .
+    MkIClaimData MW Public [Hint True] .
+      MkTy EmptyFC (MkFCVal EmptyFC nm)
+
+monoNSDeclaration : TaskData -> List Decl -> Decl
+monoNSDeclaration td = INamespace emptyFC (MkNS [nameStr td.outputName])
 
 public export
-monoVariant : Name -> List (Maybe (t : Type ** t)) -> Name -> Elab ()
-monoVariant tname args outputName = do
-  logMsg "monomorphiser" 0 $ "Monomorphising type " ++ show tname
-  -- Get type info
-  tinfo <- getInfo' tname
-  (n, tsig) <- lookupName tname
-  let (targs, _) = unPi tsig
-  -- Check argument list length
-  if tinfo.arty == (length args) then pure () else do
-    args' <- quote args
-    let argsFC = getFC args'
-    failAt argsFC $
-      "Argument list length (" ++ show (length args)
-      ++ ") doesn't match argument count of " ++ show tname
-      ++ " (" ++ show tinfo.arty ++ ")."
-  -- Check if given arguments are of correct types
-  let type_args_names = (.name) <$> targs
-  let type_args_ttimp = (.type) <$> targs
-  type_args_types : List (Maybe Type)  <- traverse checkExceptHole type_args_ttimp
-  let type_args_zipped : List (Maybe Name, (Maybe Type, Maybe (t : Type ** t))) = zip3 type_args_names type_args_types args
-  _ <- traverse verifyZippedArgs type_args_zipped
-  -- Formulate matching taskst
-  let zippedULTask : SnocList (Arg, Maybe (t: Type ** t)) = zip (cast targs) (cast args)
-  unifyTarget <- makeUnifyLHS tname zippedULTask
-  logMsg "monomorphiser" 0 $ "Unify LHS: " ++ show unifyTarget
-  let consTargets = conToUnifyRHS tname @{tinfo.args} <$> tinfo.cons
-  logMsg "monomorphiser" 0 $ "Constructors unify RHSes:" ++ show consTargets
-  -- Run unification
-  consUniResult <- traverse (runUniTask unifyTarget) consTargets  
+record MonoOpts where
+  constructor MkMonoOpts
+  deriveCastMToP : Bool
 
-  logMsg "monomorphiser" 0 $ "Unification results:" ++ show consUniResult
+public export
+DefaultOpts : MonoOpts
+DefaultOpts = MkMonoOpts
+  { deriveCastMToP = True
+  }
 
-  let contys = produceConstructors outputName args $ zip tinfo.cons consUniResult
+public export
+monomorphise : {default DefaultOpts opts : MonoOpts} -> TypeTask l => l -> Name -> Elab ()
+monomorphise l outputName = do
+  taskData <- getTaskData l outputName
+  logDebug "Monomorphising \{show taskData.taskQuote}."
+  conSigs <- traverse (\x => pure $ snd $ !(lookupName x.name)) taskData.typeInfo.cons
+  unifyResults <- traverse (unifyCon taskData) taskData.typeInfo.cons
+  logDebug "Unification results: \{show unifyResults}"
+  
+  typeDecl <- monoTypeDeclaration taskData unifyResults
 
-  let nsDecl = INamespace emptyFC (MkNS [nameStr outputName]) [
-    iData Public outputName (reduceArgs tsig args) [] $ contys
-  ]
-  logMsg "monomorphiser" 0 $ "Going to declare \{show nsDecl}"
+  logDebug "deriveCast = \{show opts.deriveCastMToP}"
 
+  let castMToP = 
+    if opts.deriveCastMToP then [ fnClaim "mToP" $ implToPolySig taskData 
+      , implToPolyDef "mToP" taskData $ zip taskData.typeInfo.cons $ zip conSigs unifyResults
+      , interfaceClaim "mToPCast" $ castToPolySig taskData
+      , castDef "mToPCast" "mToP" ] else []
+
+  logDebug "castMToP = \{show castMToP}"
+
+  let nsDecl = monoNSDeclaration taskData $ typeDecl :: castMToP
+
+  logDebug "Declaring: \{show nsDecl}"
   declare [nsDecl]
+
   pure ()
 
---%runElab monoVariant "Vect" [Nothing, Just (Type ** String)] "VectString"
---
---vs : VectString 3
---vs = ["x", "y", "z"]
---
---failing
---  vs' : VectString 4
---  vs' = ["only one"]
---
---failing
---  vs'' : VectString 1
---  vs'' = ["x", "y"]
---
---%runElab monoVariant "Tag" [Nothing, Just (Type ** String)] "TagString"
-
-public export
 %macro
-monoVariant' : Name -> List (Maybe (t : Type ** t)) -> Name -> Elab ()
-monoVariant' = monoVariant
+public export
+monomorphise' : {default DefaultOpts opts : MonoOpts} -> TypeTask l => l -> Name -> Elab ()
+monomorphise' = monomorphise {opts=opts}

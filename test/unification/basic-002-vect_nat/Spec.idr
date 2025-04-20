@@ -6,7 +6,7 @@ import Data.Vect
 %language ElabReflection
 
 
-%runElab monoVariant "Vect" [Nothing, Just (Type ** Nat)] "VectNat"
+%runElab monomorphise (\x=>Vect x Nat) "VectNat"
 
 ln : VectNat 3
 ln = [1,2,3]

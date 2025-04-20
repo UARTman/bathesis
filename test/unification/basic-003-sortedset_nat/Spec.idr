@@ -6,8 +6,13 @@ import Data.SortedSet
 
 %language ElabReflection
 
+failing
+  %runElab monomorphise (SortedSet Nat) "SortedSetNat"
 
-%runElab monoVariant "SortedSet" [Just (Type ** Nat)] "SortedSetNat"
+NoCast : MonoOpts
+NoCast = { deriveCastMToP := False } DefaultOpts
+
+%runElab monomorphise {opts=NoCast} (SortedSet Nat) "SortedSetNat"
 
 
 main : IO ()
