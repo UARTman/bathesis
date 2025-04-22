@@ -55,6 +55,18 @@ substituteVariableN n t =
 substituteVariablesN : SortedMap Name TTImp -> TTImp -> ShadowingInfoT (QuoteInfoT Identity) TTImp -> ShadowingInfoT (QuoteInfoT Identity) TTImp
 substituteVariablesN  = provideShadowingInfo . provideQuoteInfo . substituteVariablesImpl 
 
+substituteBindImpl :
+  MonadReadQuoteInfo m => MonadReadShadowingInfo m =>
+  SortedMap Name TTImp -> TTImp -> m TTImp -> m TTImp
+substituteBindImpl vMap (IVar fc nm1) m = 
+  if ((not !isQuote) && (not !(varIsShadowed nm1))) then fromMaybe m $ pure <$> lookup nm1 vMap else m
+substituteBindImpl vMap (IBindVar fc nm1) m = 
+  if ((not !isQuote) && (not !(varIsShadowed (fromString nm1)))) then fromMaybe m $ pure <$> lookup (fromString nm1) vMap else m
+substituteBindImpl _ _ m = m
+
+substituteBindN : SortedMap Name TTImp -> TTImp -> ShadowingInfoT (QuoteInfoT Identity) TTImp -> ShadowingInfoT (QuoteInfoT Identity) TTImp
+substituteBindN  = provideShadowingInfo . provideQuoteInfo . substituteBindImpl 
+
 public export
 substituteVariable : Name -> TTImp -> TTImp -> TTImp
 substituteVariable n t =
@@ -72,6 +84,14 @@ substituteVariables vMap =
   mapATTImp' (substituteVariablesN vMap)
 
 public export
+substituteBind : SortedMap Name TTImp -> TTImp -> TTImp
+substituteBind vMap =
+  runIdentity .
+  runQuoteInfoT False .
+  runShadowingInfoT empty .
+  mapATTImp' (substituteBindN vMap)
+
+public export
 substituteVariable' : (isQuote : Bool) -> (shadowedNames : SortedSet Name) -> Name -> TTImp -> TTImp -> TTImp
 substituteVariable' isQuote shadowedNames n t =
   runIdentity . runQuoteInfoT isQuote . runShadowingInfoT shadowedNames . mapATTImp' (substituteVariableN n t)
@@ -81,6 +101,10 @@ substituteVariables' : (isQuote : Bool) -> (shadowedNames : SortedSet Name) -> S
 substituteVariables' isQuote shadowedNames vMap =
   runIdentity . runQuoteInfoT isQuote . runShadowingInfoT shadowedNames . mapATTImp' (substituteVariablesN vMap)
 
+public export
+substituteBind' : (isQuote : Bool) -> (shadowedNames : SortedSet Name) -> SortedMap Name TTImp -> TTImp -> TTImp
+substituteBind' isQuote shadowedNames vMap =
+  runIdentity . runQuoteInfoT isQuote . runShadowingInfoT shadowedNames . mapATTImp' (substituteBindN vMap)
 
 tSimpleTest : TTImp
 tSimpleTest = substituteVariable `{a} `(x - 1) `(a + b + (let a = 10 in (x - a)))

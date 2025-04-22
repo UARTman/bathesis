@@ -10,7 +10,7 @@ failing
   %runElab monomorphise (SortedSet Nat) "SortedSetNat"
 
 NoCast : MonoOpts
-NoCast = { deriveCastMToP := False } DefaultOpts
+NoCast = { deriveCastMToP := False, deriveCastPToM := False } DefaultOpts
 
 %runElab monomorphise {opts=NoCast} (SortedSet Nat) "SortedSetNat"
 
