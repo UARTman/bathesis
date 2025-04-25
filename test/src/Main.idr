@@ -1,7 +1,5 @@
 module Main
 
-import Monomorphisation
-
 import Language.Reflection
 import Language.Reflection.Pretty
 import Language.Reflection.Util
