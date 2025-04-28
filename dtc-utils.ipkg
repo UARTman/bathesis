@@ -20,9 +20,16 @@ modules = Language.Reflection.VarSubst
         , Language.Reflection.QuoteInfo
         , Language.Reflection.ShadowingInfo
         , Language.Reflection.Unification       
+	, Language.Reflection.Unification.Runner
+        , Language.Reflection.Unification.Context       
+        , Language.Reflection.Unification.Engine      
+        , Language.Reflection.Unification.Error       
+        , Language.Reflection.Unification.Graph      
+        , Language.Reflection.Unification.Monad  
+        , Language.Reflection.Unification.State
         , Language.Reflection.Monomorphisation
 
-depends = elab-util, elab-pretty, prettier, deptycheck
+depends = elab-util, elab-pretty, prettier, deptycheck, i-hate-parens, mtl-tuple-impls
 
 -- main file (i.e. file to load at REPL)
 -- main =

@@ -52,8 +52,8 @@ getTName : TTImp -> Elab Name
 getTName (IVar _ n) = pure n
 getTName t = failAt (getFC t) "Couldn't get type name"
 
-freeVarsLambda : TTImp -> SortedSet Name
-freeVarsLambda (ILam _ _ _ (Just n) _ r) = insert n $ freeVarsLambda r
+freeVarsLambda : TTImp -> SortedMap Name TTImp
+freeVarsLambda (ILam _ _ _ (Just n) a r) = insert n a $ freeVarsLambda r
 freeVarsLambda (ILam _ _ _ Nothing _ r) = freeVarsLambda r
 freeVarsLambda _ = empty
 
@@ -70,7 +70,7 @@ record AppData where
   constructor MkAppData
   fn : TTImp
   positional : List PosArg
-  named : SortedMap Name TTImp 
+  named : SortedMap Name TTImp
   withs : List TTImp
 
 %runElab derive "AppData" [Show, Eq]
@@ -97,29 +97,36 @@ isPositional (MkArg count ExplicitArg name type) = True
 isPositional (MkArg count AutoImplicit name type) = True
 isPositional (MkArg count (DefImplicit x) name type) = False
 
-freeVarsApp : AppData -> Types.TypeInfo -> SortedSet Name
+excise : Ord t => SortedSet t -> SortedMap t k -> SortedMap t k
+excise x = doit $ Prelude.toList x
+  where
+    doit : List t -> SortedMap t k -> SortedMap t k
+    doit [] x = x
+    doit (x :: xs) m = delete x $ doit xs m
+
+freeVarsApp : AppData -> Types.TypeInfo -> SortedMap Name TTImp
 freeVarsApp ad tinfo = do
   let tinfo_tuplist = toList $ zip tinfo.args tinfo.argNames
   let tuplistPos = filter (\(x, n) => isPositional x) tinfo_tuplist
   let tuplistNamed = filter (\(x, n) => not $ isPositional x) tinfo_tuplist
-  let tlNames : SortedSet Name = fromList $ map snd $ tuplistNamed
+  let tlNames : SortedMap Name TTImp = fromList $ map (\(a,n)=>(n, a.type)) $ tuplistNamed
   let unfreeNames : SortedSet Name = fromList $ keys ad.named
-  let freePositional = fromList $ map snd $ drop (length ad.positional) tuplistPos
-  flip difference unfreeNames $ union freePositional tlNames
+  let freePositional = fromList $ map (\(a,n)=>(n, a.type)) $ drop (length ad.positional) tuplistPos
+  excise unfreeNames $ mergeLeft freePositional tlNames
 
-freeVars'' : TTImp -> AppData -> Types.TypeInfo -> SortedSet Name
-freeVars'' t ad ti = union (freeVarsLambda t) $ freeVarsApp ad ti
+freeVars'' : TTImp -> AppData -> Types.TypeInfo -> SortedMap Name TTImp
+freeVars'' t ad ti = mergeLeft (freeVarsLambda t) $ freeVarsApp ad ti
 
 traverseTupList : List (Arg, Name) -> (SortedMap Name TTImp, List TTImp)
 traverseTupList [] = (empty, [])
 traverseTupList (((MkArg _ pinfo _ _), nm) :: xs) with (pinfo, traverseTupList xs)
-  traverseTupList (((MkArg _ _ _ _), nm) :: xs) | (ImplicitArg, named, positionals) = 
+  traverseTupList (((MkArg _ _ _ _), nm) :: xs) | (ImplicitArg, named, positionals) =
     (insert nm (IVar emptyFC nm) named, positionals)
-  traverseTupList (((MkArg _ _ _ _), nm) :: xs) | (ExplicitArg, named, positionals) = 
+  traverseTupList (((MkArg _ _ _ _), nm) :: xs) | (ExplicitArg, named, positionals) =
     (named, IVar emptyFC nm :: positionals)
-  traverseTupList (((MkArg _ _ _ _), nm) :: xs) | (AutoImplicit, named, positionals) = 
+  traverseTupList (((MkArg _ _ _ _), nm) :: xs) | (AutoImplicit, named, positionals) =
     (insert nm (IVar emptyFC nm) named, positionals)
-  traverseTupList (((MkArg _ _ _ _), nm) :: xs) | (DefImplicit def, named, positionals) = 
+  traverseTupList (((MkArg _ _ _ _), nm) :: xs) | (DefImplicit def, named, positionals) =
     (insert nm ?x_replaced_3 named, positionals)
 
 getExplicits : AppData -> List TTImp
@@ -137,13 +144,13 @@ fINamed t ((n, a) :: xs) = INamedApp emptyFC (fINamed t xs) n a
 traverseTupList' : List (Arg, Name) -> (SortedMap Name TTImp, List Name)
 traverseTupList' [] = (empty, [])
 traverseTupList' (((MkArg _ pinfo _ _), nm) :: xs) with (pinfo, traverseTupList' xs)
-  traverseTupList' (((MkArg _ _ _ _), nm) :: xs) | (ImplicitArg, named, positionals) = 
+  traverseTupList' (((MkArg _ _ _ _), nm) :: xs) | (ImplicitArg, named, positionals) =
     (insert nm (IVar emptyFC nm) named, positionals)
-  traverseTupList' (((MkArg _ _ _ _), nm) :: xs) | (ExplicitArg, named, positionals) = 
+  traverseTupList' (((MkArg _ _ _ _), nm) :: xs) | (ExplicitArg, named, positionals) =
     (named, nm :: positionals)
-  traverseTupList' (((MkArg _ _ _ _), nm) :: xs) | (AutoImplicit, named, positionals) = 
+  traverseTupList' (((MkArg _ _ _ _), nm) :: xs) | (AutoImplicit, named, positionals) =
     (insert nm (IVar emptyFC nm) named, positionals)
-  traverseTupList' (((MkArg _ _ _ _), nm) :: xs) | (DefImplicit def, named, positionals) = 
+  traverseTupList' (((MkArg _ _ _ _), nm) :: xs) | (DefImplicit def, named, positionals) =
     (insert nm ?x_replaced_4 named, positionals)
 
 acc_positionals : SortedMap Name Name -> (TTImp, Name) -> SortedMap Name Name
@@ -161,7 +168,7 @@ aliases ad tinfo = do
   let a = foldl acc_positionals empty $ zip explicits tyPositional
   let b = foldl acc_nameds a $ SortedMap.toList ad.named
   b
-  
+
 
 fullInvocation' : AppData -> Types.TypeInfo -> TTImp
 fullInvocation' ad tinfo = do
@@ -181,7 +188,7 @@ record TaskData where
   outputInvocation : TTImp
   appData : AppData
   typeInfo : Types.TypeInfo
-  freeVars : SortedSet Name
+  freeVars : SortedMap Name TTImp
   fullInvocation : TTImp
 
 Show Types.TypeInfo where
@@ -192,9 +199,9 @@ Show Types.TypeInfo where
 ||| Restore IApp from a reverse list of args
 restoreApp : Name -> SnocList Arg -> TTImp
 restoreApp nm [<] = IVar EmptyFC nm
-restoreApp nm (sx :< (MkArg count ExplicitArg name type)) = 
+restoreApp nm (sx :< (MkArg count ExplicitArg name type)) =
   IApp emptyFC (restoreApp nm sx) $ IVar EmptyFC $ fromMaybe "n" name
-restoreApp nm (sx :< (MkArg count _ name type)) = 
+restoreApp nm (sx :< (MkArg count _ name type)) =
   INamedApp emptyFC (restoreApp nm sx) (fromMaybe "n" name) $ IVar EmptyFC $ fromMaybe "n" name
 
 ||| Restore IApp from a reverse list of args, doing a back-and-forth string name conversion
@@ -202,30 +209,30 @@ restoreApp nm (sx :< (MkArg count _ name type)) =
 ||| Useful in referring to bound compiler-generated variables
 restoreApp' : Name -> SnocList Arg -> TTImp
 restoreApp' nm [<] = IVar EmptyFC nm
-restoreApp' nm (sx :< (MkArg count ExplicitArg name type)) = 
+restoreApp' nm (sx :< (MkArg count ExplicitArg name type)) =
   IApp emptyFC (restoreApp' nm sx) $ IVar EmptyFC $ fromString $ nameStr $ fromMaybe "n" name
-restoreApp' nm (sx :< (MkArg count _ name type)) = 
+restoreApp' nm (sx :< (MkArg count _ name type)) =
   INamedApp emptyFC (restoreApp' nm sx) (fromMaybe "n" name) $ IVar EmptyFC $ fromString $ nameStr $ fromMaybe "n" name
 
 ||| Restore IApp from a reverse list of args, binding variables
 restoreBind : Name -> SnocList Arg -> TTImp
 restoreBind nm [<] = IVar EmptyFC nm
-restoreBind nm (sx :< (MkArg count ExplicitArg name type)) = 
+restoreBind nm (sx :< (MkArg count ExplicitArg name type)) =
   IApp emptyFC (restoreBind nm sx) $ IBindVar EmptyFC $ nameStr $ fromMaybe "n" name
-restoreBind nm (sx :< (MkArg count _ name type)) = 
+restoreBind nm (sx :< (MkArg count _ name type)) =
   INamedApp emptyFC (restoreBind nm sx) (fromMaybe "n" name) $ IBindVar EmptyFC $ nameStr $ fromMaybe "n" name
 
-||| Restore IApp from a reverse list of args, binding variables
+||| Restore IApp from a reverse list of args, binding variables, doing a back-and-forth string name conversion
 restoreBind' : Name -> SnocList Arg -> SnocList Name -> TTImp
 restoreBind' nm [<] [<] = IVar EmptyFC nm
 restoreBind' nm _ [<] = IVar EmptyFC nm
 restoreBind' nm [<] _ = IVar EmptyFC nm
-restoreBind' nm (sx :< (MkArg count ExplicitArg name type)) (sx' :< vname) = 
+restoreBind' nm (sx :< (MkArg count ExplicitArg name type)) (sx' :< vname) =
   IApp emptyFC (restoreBind' nm sx sx') $ IBindVar EmptyFC $ nameStr $ vname
 restoreBind' nm (sx :< _) (sx' :< _) = restoreBind' nm sx sx'
--- restoreBind' nm (sx :< (MkArg count _ name type)) (sx' :< vname) = 
+-- restoreBind' nm (sx :< (MkArg count _ name type)) (sx' :< vname) =
 --   INamedApp emptyFC (restoreBind' nm sx sx') (fromMaybe "n" name) $ IBindVar EmptyFC $ nameStr $ vname
-  
+
 ||| Extract task data from lambda and name
 getTaskData : TypeTask l => l -> Name -> Elab TaskData
 getTaskData l' outputName = do
@@ -238,7 +245,7 @@ getTaskData l' outputName = do
   let freeVars = freeVars'' taskQuote appData typeInfo
   let fullInvocation = fullInvocation' appData typeInfo
   let outputInvocation = restoreApp outputName $ cast $ fst $ unPi taskQuoteType
-  pure $ MkTaskData 
+  pure $ MkTaskData
     { taskQuote
     , taskQuoteType
     , typeName
@@ -250,20 +257,24 @@ getTaskData l' outputName = do
     , fullInvocation
     }
 
+gan : Arg -> Maybe (Name, TTImp)
+gan (MkArg count piInfo Nothing type) = Nothing
+gan (MkArg count piInfo (Just x) type) = Just (x, type)
+
 ||| Restore constructor argument names and return types
-conInvocation : Con na va -> Elab (List Name, TTImp)
+conInvocation : Con na va -> Elab (List (Name, TTImp), TTImp)
 conInvocation con = do
   (_, conSig) <- lookupName con.name
   let (conArgs, conRetTy) = unPi conSig
-  let conArgNames = mapMaybe (.name) conArgs
+  let conArgNames = mapMaybe gan conArgs
   pure (conArgNames, conRetTy)
 
 ||| Run unification on given constructor
-unifyCon : TaskData -> Con na va -> Elab $ Either String (SortedMap Name TTImp, SortedMap Name TTImp)
+unifyCon : TaskData -> Con na va -> Elab $ Either UnificationError (SortedMap Name TTImp, SortedMap Name TTImp)
 unifyCon td con = do
   (conArgNames, conRetTy) <- conInvocation con
-  let freeVars' = Prelude.toList td.freeVars
-  logDebug $ joinBy "\n" 
+  let freeVars' = SortedMap.toList td.freeVars
+  logDebug $ joinBy "\n"
     [ "For constructor \{show con.name}:"
     , "Unifying \{show freeVars'} : \{show td.fullInvocation}"
     , "     and \{show conArgNames} : \{show conRetTy}"
@@ -297,13 +308,13 @@ mapMonoA f (MkConInfo _ _ Nothing) = pure $ Nothing
 
 subInArgs' : SortedMap Name TTImp -> SortedMap Name TTImp -> List Arg -> List Arg
 subInArgs' _ _ [] = []
-subInArgs' vMap inScope ((MkArg _ _ Nothing _) :: xs) = 
+subInArgs' vMap inScope ((MkArg _ _ Nothing _) :: xs) =
   subInArgs' vMap inScope xs
-subInArgs' vMap inScope ((MkArg count piInfo (Just nm) type) :: xs) = 
+subInArgs' vMap inScope ((MkArg count piInfo (Just nm) type) :: xs) =
   case lookup nm vMap of
     Just t => subInArgs' vMap (insert nm t inScope) xs
-    Nothing => 
-      (MkArg count piInfo (Just nm) (substituteVariables inScope type)) 
+    Nothing =>
+      (MkArg count piInfo (Just nm) (substituteVariables inScope type))
         :: subInArgs' vMap inScope xs
 
 ||| Remove specified arguments from a list, substituting them everywhere else.
@@ -311,7 +322,7 @@ subInArgs : SortedMap Name TTImp -> List Arg -> List Arg
 subInArgs vMap = subInArgs' vMap empty
 
 ||| Assemble information about a constructor post-invocation
-assembleInfo : TaskData -> Con na va -> Either String (SortedMap Name TTImp, SortedMap Name TTImp) -> Elab $ ConInfo na va
+assembleInfo : TaskData -> Con na va -> Either UnificationError (SortedMap Name TTImp, SortedMap Name TTImp) -> Elab $ ConInfo na va
 assembleInfo td con (Left _) = do
   (_, conSig) <- conInvocation con
   pure $ MkConInfo con conSig $ Nothing
@@ -322,9 +333,9 @@ assembleInfo td con (Right (subL, subR)) = do
   pure $ MkConInfo con conSig $ Just $ MkConMono subL subR mSig
 
 ||| Assemble information about all constructors
-(.assembleInfo) : 
-     (td: TaskData) 
-  -> List (Either String (SortedMap Name TTImp, SortedMap Name TTImp)) 
+(.assembleInfo) :
+     (td: TaskData)
+  -> List (Either UnificationError (SortedMap Name TTImp, SortedMap Name TTImp))
   -> Elab $ List $ ConInfo td.typeInfo.arty td.typeInfo.args
 (.assembleInfo) td ur = traverse (uncurry (assembleInfo td)) $ zip td.typeInfo.cons ur
 
@@ -334,10 +345,10 @@ assembleInfo td con (Right (subL, subR)) = do
   where
     inner : ConMono -> ITy
     inner mCon = mkTy (dropNS conInfo.con.name) mCon.sig
-  
+
 ||| Generate monomorphic type declaration
 monoTypeDeclaration' : TaskData -> List (ConInfo na va) -> Decl
-monoTypeDeclaration' td conIs = 
+monoTypeDeclaration' td conIs =
   iData Public td.outputName td.taskQuoteType [] $ mapMaybe ((.constructor) td) conIs
 
 ||| Substitute IPi's return type
@@ -376,9 +387,9 @@ implToPolyClause' nm td conI = mapMono inner conI
     inner : ConMono -> Clause
     inner conM = do
       let (a, b) = unPi conM.sig
-      let monoInv = IApp emptyFC (IVar emptyFC nm) $ 
+      let monoInv = IApp emptyFC (IVar emptyFC nm) $
         restoreBind (NS (MkNS [(nameStr td.outputName)]) (dropNS conI.con.name)) $ cast a
-      let (a', b') = unPi conI.sig      
+      let (a', b') = unPi conI.sig
       let conInv' = substituteVariables conM.subR $ restoreApp' conI.con.name $ cast a'
       PatClause emptyFC monoInv conInv'
 
@@ -389,14 +400,14 @@ implToMonoClause' nm td conI = mapMono inner conI
     inner conM = do
       let (a, b) = unPi conM.sig
       let (a', b') = unPi conI.sig
-      let monoInv = IApp emptyFC (IVar emptyFC nm) $ 
+      let monoInv = IApp emptyFC (IVar emptyFC nm) $
         substituteBind conM.subR $ restoreBind conI.con.name $ cast a'
       let conInv' = restoreApp' (NS (MkNS [(nameStr td.outputName)]) (dropNS conI.con.name)) $ cast a
       PatClause emptyFC monoInv conInv'
 
-defForConstructors : 
+defForConstructors :
   Name -> TaskData -> (ConInfo na va -> Maybe Clause) -> List (ConInfo na va) -> Decl
-defForConstructors nm td f = IDef emptyFC nm . mapMaybe f 
+defForConstructors nm td f = IDef emptyFC nm . mapMaybe f
 
 implToPolyDef' : Name -> TaskData -> List (ConInfo na va) -> Decl
 implToPolyDef' nm td = defForConstructors nm td $ implToPolyClause' nm td
@@ -417,11 +428,11 @@ eqSig td = genericSig td
   `((eqI' : Eq ~(td.fullInvocation)) => Eq ~(td.outputInvocation))
 
 implEqDef : Name -> Name -> Decl
-implEqDef n castN = IDef emptyFC n $ singleton $ PatClause emptyFC 
+implEqDef n castN = IDef emptyFC n $ singleton $ PatClause emptyFC
   `(~(IVar emptyFC n) a b) `((cast @{~(IVar emptyFC castN)} a) == (cast b))
 
 eqDef : Name -> Name -> Decl
-eqDef n n' = IDef emptyFC n $ singleton $ PatClause emptyFC (IVar emptyFC n) 
+eqDef n n' = IDef emptyFC n $ singleton $ PatClause emptyFC (IVar emptyFC n)
   `(MkEq ~(IVar emptyFC n') (\x,y => not $ ~(IVar emptyFC n') x y))
 
 -- ========================
@@ -437,11 +448,11 @@ showSig td = rewireIPiImplicit td.taskQuoteType
   `(Show ~(td.fullInvocation) => Show ~(td.outputInvocation))
 
 implShowDef : Name -> Name -> Decl
-implShowDef n castN = IDef emptyFC n $ singleton $ PatClause emptyFC 
+implShowDef n castN = IDef emptyFC n $ singleton $ PatClause emptyFC
   `(~(IVar emptyFC n) a) `(show (cast @{~(IVar emptyFC castN)} a))
 
 showDef : Name -> Name -> Decl
-showDef n n' = IDef emptyFC n $ singleton $ PatClause emptyFC (IVar emptyFC n) 
+showDef n n' = IDef emptyFC n $ singleton $ PatClause emptyFC (IVar emptyFC n)
   `(MkShow ~(IVar emptyFC n') (\_ => ~(IVar emptyFC n')))
 
 castDef : Name -> Name -> Decl
@@ -470,19 +481,19 @@ argBindTuple (x :: (y :: [])) = `(MkPair ~(IBindVar emptyFC $ nameStr x) ~(IBind
 argBindTuple (x :: xs) = `(MkPair ~(IBindVar emptyFC $ nameStr x) ~(argBindTuple xs))
 
 fnClaim : Name -> TTImp -> Decl
-fnClaim nm = 
+fnClaim nm =
   IClaim . MkFCVal EmptyFC .
     MkIClaimData MW Private [] .
       MkTy EmptyFC (MkFCVal EmptyFC nm)
 
 pubFnClaim : Name -> TTImp -> Decl
-pubFnClaim nm = 
+pubFnClaim nm =
   IClaim . MkFCVal EmptyFC .
     MkIClaimData MW Public [] .
       MkTy EmptyFC (MkFCVal EmptyFC nm)
 
 interfaceClaim : Name -> TTImp -> Decl
-interfaceClaim nm = 
+interfaceClaim nm =
   IClaim . MkFCVal EmptyFC .
     MkIClaimData MW Public [Hint True] .
       MkTy EmptyFC (MkFCVal EmptyFC nm)
@@ -504,12 +515,12 @@ makeImplicit (MkArg count piInfo name type) = MkArg count ImplicitArg name type
 ||| Restore IApp from a reverse list of args
 restoreAppRename : Name -> SnocList (Arg, Arg) -> TTImp
 restoreAppRename nm [<] = IVar EmptyFC nm
-restoreAppRename nm (sx :< ((MkArg count _ name type), (MkArg _ _ n' _))) = 
+restoreAppRename nm (sx :< ((MkArg count _ name type), (MkArg _ _ n' _))) =
   INamedApp emptyFC (restoreAppRename nm sx) (fromMaybe "n" name) $ IVar EmptyFC $ fromMaybe "n" n'
 
 piAllRename' : List (Arg, Arg) -> TTImp -> SortedMap Name TTImp -> TTImp
 piAllRename' [] t s = substituteVariables s t
-piAllRename' (((MkArg count piInfo (Just name) type), (MkArg _ _ (Just mnm) _)) :: xs) t s = 
+piAllRename' (((MkArg count piInfo (Just name) type), (MkArg _ _ (Just mnm) _)) :: xs) t s =
   IPi EmptyFC count piInfo (Just mnm) (substituteVariables s type) $
     piAllRename' xs t $ insert name (IVar EmptyFC mnm) s
 piAllRename' (_ :: xs) t s = piAllRename' xs t s
@@ -557,7 +568,7 @@ unpackMonoSig' td conI = mapMonoA inner conI
 
 genPiEq : List (TTImp, TTImp) -> TTImp -> TTImp
 genPiEq [] t = t
-genPiEq ((x, y) :: xs) t = 
+genPiEq ((x, y) :: xs) t =
   IPi emptyFC MW ExplicitArg Nothing `(~x ~=~ ~y) $ genPiEq xs t
 
 
@@ -567,7 +578,7 @@ packPolySig' td conI = mapMonoA inner conI
     inner : ConMono -> Elab TTImp
     inner comM = do
       let conArgs = toList conI.con.args
-      lhsArgs <- traverse remapNameArg $ toList conI.con.args      
+      lhsArgs <- traverse remapNameArg $ toList conI.con.args
       rhsArgs <- traverse remapNameArg $ toList conI.con.args
       let lhsApp = restoreAppRename conI.con.name $ cast $ zip conArgs lhsArgs
       let rhsApp = restoreAppRename conI.con.name $ cast $ zip conArgs rhsArgs
@@ -663,7 +674,7 @@ genUnpack' td ci = do
   let polyT' = fromMaybe [] $ singleton <$> !(packPolyClaim' "pack" td ci)
   let polyD' = fromMaybe [] $ singleton <$> packPolyDef' "pack" td ci
   let nsDecl' = INamespace emptyFC (MkNS [nameStr nsName']) $ polyT ++ polyD ++ polyT' ++ polyD'
-  
+
   pure $ [nsDecl, nsDecl']
 
 castInjImplSig : Name -> TaskData -> Elab TTImp
@@ -676,8 +687,8 @@ castInjImplSig convN td = genericSig td <$> inner
       let xVar = IVar emptyFC xSym
       let yVar = IVar emptyFC ySym
       let convVar = IVar emptyFC convN
-      pure $ 
-        IPi emptyFC MW ExplicitArg (Just xSym) td.outputInvocation $ 
+      pure $
+        IPi emptyFC MW ExplicitArg (Just xSym) td.outputInvocation $
           IPi emptyFC MW ExplicitArg (Just ySym) td.outputInvocation $
             `((~convVar ~xVar) ~=~ (~convVar ~yVar) -> ~xVar ~=~ ~yVar)
 
@@ -696,7 +707,7 @@ countExplicits (_ :: xs) = countExplicits xs
 castInjImplDef : Name -> TaskData -> List (ConInfo na va)-> Elab Decl
 castInjImplDef nm td cis = do
   clauses <- mapMaybe id <$> traverse (\x => mapMonoA (castInjClause x) x) cis
-  pure $ IDef emptyFC nm clauses   
+  pure $ IDef emptyFC nm clauses
   where
     castInjClause : ConInfo na va -> ConMono -> Elab Clause
     castInjClause conI conM = do
@@ -718,7 +729,7 @@ castInjImplDef nm td cis = do
       -- let nmBigApp = `(~nmVar ~conAppB ~conAppB')
       if (countExplicits conArgs) == 0 then
         pure $ PatClause EmptyFC `(~nmVar ~conVar ~conVar _) `(Builtin.Refl) else
-        pure $ WithClause EmptyFC lhsApp MW `(unpack ~prfVar) Nothing [] 
+        pure $ WithClause EmptyFC lhsApp MW `(unpack ~prfVar) Nothing []
           [ PatClause EmptyFC `(~lhsApp | ~tBind) rhsApp
           ]
 
@@ -761,6 +772,11 @@ gatedLog' : Show t => Bool -> t -> String -> t -> Elab t
 gatedLog' g d s e = gatedLog g d s $ pure e
 
 
+showUR : Show t => Either UnificationError t -> String
+showUR (Left _) = "<error>"
+showUR (Right r) = show r
+
+
 ||| Monomorphise a type based on a lambda and a name
 public export
 monomorphise : {default DefaultOpts opts : MonoOpts} -> TypeTask l => l -> Name -> Elab ()
@@ -769,7 +785,7 @@ monomorphise l outputName = do
   logDebug "Monomorphising \{show taskData.taskQuote}."
 
   unifyResults <- traverse (unifyCon taskData) taskData.typeInfo.cons
-  logDebug "Unification results: \{show unifyResults}"
+  logDebug "Unification results: \{joinBy "," $ map showUR unifyResults}"
 
   conIs <- taskData.assembleInfo unifyResults
 
@@ -777,10 +793,10 @@ monomorphise l outputName = do
   logDebug "Type declaration : \{show typeDecl}"
 
   castMToP <- gatedLog' opts.deriveCastMToP [] "M->P Cast" $ do
-    [ fnClaim "mToP" $ implToPolySig taskData 
+    [ fnClaim "mToP" $ implToPolySig taskData
     , implToPolyDef' "mToP" taskData conIs
     , interfaceClaim "mToPCast" $ castToPolySig taskData
-    , castDef "mToPCast" "mToP" 
+    , castDef "mToPCast" "mToP"
     ]
 
   castPToM <- gatedLog' opts.deriveCastPToM [] "P->M Cast" $ do
@@ -803,8 +819,8 @@ monomorphise l outputName = do
     , showDef "dShow" "showImpl"]
 
 
-  let nsDecl = monoNSDeclaration taskData $ 
-    typeDecl :: castMToP ++ castPToM ++ eqImpl ++ showImpl 
+  let nsDecl = monoNSDeclaration taskData $
+    typeDecl :: castMToP ++ castPToM ++ eqImpl ++ showImpl
 
   logDebug "Declaring: \{show nsDecl}"
   declare [nsDecl]
