@@ -54,14 +54,19 @@ parameters {auto task: UnificationTask}
     show (VarEqExpr x y) = "Adding equation: \{show x} :== \{show y}"
 
   public export
-  UStack : {auto task: UnificationTask} -> Type
+  UStack : Type
   UStack = List UStep
+
+  public export
+  AliasMap : Type
+  AliasMap = SortedMap Name TTImp
 
 public export
 record Tag {auto task: UnificationTask} (t : Type) where
   constructor MkTag
   origin: Origin
-  stack : UStack
+  -- stack : UStack
+  aliasMap : AliasMap
   inner: t
 
 parameters {auto task: UnificationTask}
@@ -83,31 +88,31 @@ parameters {auto task: UnificationTask}
 
   public export
   Functor Tag where
-    map f (MkTag o st x) = MkTag o st $ f x
+    map f (MkTag o am x) = MkTag o am $ f x
 
   public export
   tagLeft : MonadReader UStack m => t -> m $ Tag t
-  tagLeft x = pure $ MkTag Left !(ask) x
+  tagLeft x = pure $ MkTag Left empty x
 
   public export
   tagRight : MonadReader UStack m => t -> m $ Tag t
-  tagRight x = pure $ MkTag Right !(ask) x
+  tagRight x = pure $ MkTag Right empty x
 
   public export
-  mkTag : MonadReader UStack m => Origin -> t -> m $ Tag t
-  mkTag o x = pure $ MkTag o !(ask) x
+  mkTag : MonadReader UStack m => Origin -> AliasMap -> t -> m $ Tag t
+  mkTag o am x = pure $ MkTag o am x
 
   public export
   tagLeft': t -> Tag t
-  tagLeft' = MkTag Left []
+  tagLeft' = MkTag Left empty
 
   public export
   tagRight' : t -> Tag t
-  tagRight' = MkTag Right []
+  tagRight' = MkTag Right empty
 
   public export
   (.same) : Tag t -> g -> Tag g
-  (.same) (MkTag o st _) x = MkTag o st x
+  (.same) (MkTag o am _) x = MkTag o am x
 
   public export
   (-|>) : Tag t -> g -> Tag g
@@ -132,8 +137,21 @@ parameters {auto task: UnificationTask}
   ||| Check if an expression with origin metadata is a free variable invocation
   public export
   (.isFreeVar') : Tag TTImp -> Bool
-  (.isFreeVar') dt@(MkTag __ (IVar _ y)) = isJust $ lookup y dt.freeVars
+  (.isFreeVar') dt@(MkTag _ _ (IVar _ y)) = isJust $ lookup y dt.freeVars
   (.isFreeVar') _ = False
+
+  public export
+  (.isAlias') : Tag TTImp -> Bool
+  (.isAlias') dt@(MkTag _ am (IVar _ n)) = isJust $ lookup n am
+  (.isAlias') _ = False
+
+  public export
+  (.unalias) : Tag TTImp -> Tag TTImp
+  (.unalias) dt@(MkTag _ am (IVar _ n)) = 
+    fromMaybe dt $ (.unalias) <$> dt.same <$> lookup n am
+  (.unalias) dt@(MkTag t am (ILet _ _ _ n _ val scope)) = 
+    (.unalias) $ MkTag t (insert n val am) scope
+  (.unalias) dt = dt
 
   ||| List all the free variables an origin-tagged expression depends on
   public export

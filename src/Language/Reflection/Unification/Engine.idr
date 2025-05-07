@@ -83,25 +83,25 @@ record AppData {auto task: UnificationTask} where
   withs : List $ Tag TTImp
 
 parameters {auto task: UnificationTask}
-  addArg : MonadReader UStack m => Origin -> AnyApp -> AppData -> m AppData
-  addArg @{mr} o (PosApp s) d = do 
-    s' <- mkTag @{task} @{mr} o s
+  addArg : MonadReader UStack m => Origin -> AliasMap -> AnyApp -> AppData -> m AppData
+  addArg @{mr} o amap (PosApp s) d = do 
+    s' <- mkTag @{task} @{mr} o amap s
     pure $ {positionals $= (Explicit {task} s' ::)} d
-  addArg @{mr} o (NamedApp nm s) d = do
-    nm' <- mkTag @{task} @{mr} o nm
-    s' <- mkTag @{task} @{mr} o s
+  addArg @{mr} o amap (NamedApp nm s) d = do
+    nm' <- mkTag @{task} @{mr} o amap nm
+    s' <- mkTag @{task} @{mr} o amap s
     pure $ {nameds $= insert nm' s'} d
-  addArg @{mr} o (AutoApp s) d = do
-    s' <- mkTag @{task} @{mr} o s
+  addArg @{mr} o amap (AutoApp s) d = do
+    s' <- mkTag @{task} @{mr} o amap s
     pure $ {positionals $= (Auto {task} s' ::)} d
-  addArg @{mr} o (WithApp s) d = do
-    s' <- mkTag @{task} @{mr} o s
+  addArg @{mr} o amap (WithApp s) d = do
+    s' <- mkTag @{task} @{mr} o amap s
     pure $ {withs $= (s' ::)} d
 
   unrollIApp : MonadReader UStack m => Tag TTImp -> m AppData
   unrollIApp t = do
     let (fn, args) = Deriving.DepTyCheck.Util.Reflection.unAppAny t.data
-    foldlM (flip (addArg t.origin)) (MkAppData (t.same fn) [] empty []) args
+    foldlM (flip (addArg t.origin t.aliasMap)) (MkAppData (t.same fn) [] empty []) args
 
   unifyMyArg : MonadUni m => MyArg -> MyArg -> m ()
   unifyMyArg (Explicit x) (Explicit y) = unifyExpr x y
@@ -148,7 +148,6 @@ parameters {auto task: UnificationTask}
   (:==) : MonadUni m => Tag Name -> Tag TTImp -> m ()
   (:==) = varEqExpr
   private infixr 1 :==
-
 
   unifyVars : MonadUni m => Tag TTImp -> Tag TTImp -> m ()
   unifyVars lhs rhs with (lhs.data, rhs.data)
@@ -209,4 +208,4 @@ parameters {auto task: UnificationTask}
     unifyImpl lhs rhs | (lhs'@(IAutoApp _ _ _), rhs'@(IAutoApp _ _ _)) = unifyIApp lhs rhs
     unifyImpl lhs rhs | (rhs', lhs') = throwUErr $ UnsupportedUnification
 
-  unifyExpr lhs rhs = uStep (SubUnification lhs rhs) $ unifyImpl lhs rhs
+  unifyExpr lhs rhs = uStep (SubUnification lhs rhs) $ unifyImpl lhs.unalias rhs.unalias

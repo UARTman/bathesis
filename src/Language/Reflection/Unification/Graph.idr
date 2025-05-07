@@ -34,8 +34,8 @@ delDep a b =
   , dependedBy $= update (map (delete a)) b
   }
 
-delDepN : Nat -> Nat -> Name -> DependencyGraph -> DependencyGraph
-delDepN = ?delDepN_rhs
+-- delDepN : Nat -> Nat -> Name -> DependencyGraph -> DependencyGraph
+-- delDepN = ?delDepN_rhs
 
 detectCycle1 : Nat -> SortedSet Nat -> DependencyGraph -> Bool
 detectCycle1 idx prev dg =
@@ -192,7 +192,7 @@ parameters {auto task: UnificationTask}
         where
         found : Maybe $ SortedMap Name TTImp
         found = do
-          bid <- lookup (MkTag o [] n) ust.nameToBucket
+          bid <- lookup (MkTag o empty n) ust.nameToBucket
           bd <- lookup bid ust.buckets
           expr <- bd.expr
           Just $ insert n expr.data sm
