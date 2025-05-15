@@ -8,7 +8,7 @@ parameters {auto task: UnificationTask}
   public export
   data ErrorKind : Type where
     ||| Elaboration failed with string explanation
-    ElabFailed : TTImp -> String -> ErrorKind
+    ElabFailed : String -> ErrorKind
     ||| Two positional arguments have different explicitness
     ArgExplicitnessMismatch : ErrorKind
     ||| Two named arguments that should have the same name have different ones
@@ -25,6 +25,14 @@ parameters {auto task: UnificationTask}
     CantUnifyTypeWith : Name -> TTImp -> ErrorKind
     ||| Trying to unify two different functions
     FuncVarMismatch : ErrorKind
+    ||| Trying to unify two different bounds
+    BoundVarMismatch : ErrorKind
+    ||| Trying to unify two different types
+    TypeConMismatch : ErrorKind
+    ||| Trying to unify two different constructors
+    DataConMismatch : ErrorKind
+    ||| Trying to unify two variables of different kinds
+    NameTypeMismatch : ErrorKind
     ||| Unifying variables of unsupported types
     UnsupportedVars : Name -> TTImp -> Name -> TTImp -> ErrorKind
     ||| Trying to unify variable with non-variable
@@ -38,7 +46,7 @@ parameters {auto task: UnificationTask}
   
   public export
   prettyError : ErrorKind -> String
-  prettyError (ElabFailed s str) = "Elaboration \{show s} (\{str} failed"
+  prettyError (ElabFailed str) = "Elaboration \{str} failed"
   prettyError ArgExplicitnessMismatch = "Tried to unify explicit and implicit positional arguments"
   prettyError (ArgNameMismatch x y) = "Named argument mismatch (\{show x}, \{show y})"
   prettyError AppPositionalMismatch = "Different amount of positional arguments"
@@ -47,6 +55,10 @@ parameters {auto task: UnificationTask}
   prettyError (NoTypeEqProof x y) = "No proof of equality found between \{show x} and \{show y}"
   prettyError (CantUnifyTypeWith nm s) = "Can't unify a type variable \{show nm} with non-type variable \{show s}"
   prettyError FuncVarMismatch = "Trying to unify different functions"
+  prettyError BoundVarMismatch = "Trying to unify different bounds"
+  prettyError TypeConMismatch = "Trying to unify different types"
+  prettyError DataConMismatch = "Trying to unify different constructors"
+  prettyError NameTypeMismatch = "Trying to unify variables of different kinds"
   prettyError (UnsupportedVars nm s nm1 t) = "Unsupported variable unification between \{show nm}: \{show s} and \{show nm1}: \{show t}"
   prettyError VarNonVar = "Trying to unify local variable with non-variable"
   prettyError (PrimNE c c1) = "Trying to unify two non-equal constants: {show c} and {show c1}"

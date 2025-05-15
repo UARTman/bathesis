@@ -76,7 +76,7 @@ record AppData where
 %runElab derive "AppData" [Show, Eq]
 
 extractAppData : TTImp -> AppData
-extractAppData t = extract' $ Reflection.unAppAny t
+extractAppData t = extract' $ Expr.unAppAny t
   where
     extract' : (TTImp, List AnyApp) -> AppData
     extract' (fn, []) = MkAppData fn [] empty []
@@ -270,7 +270,7 @@ conInvocation con = do
   pure (conArgNames, conRetTy)
 
 ||| Run unification on given constructor
-unifyCon : TaskData -> Con na va -> Elab $ Either UnificationError (SortedMap Name TTImp, SortedMap Name TTImp)
+unifyCon : TaskData -> Con na va -> Elab $ Either UnificationError UnificationResult
 unifyCon td con = do
   (conArgNames, conRetTy) <- conInvocation con
   let freeVars' = SortedMap.toList td.freeVars
@@ -787,7 +787,7 @@ monomorphise l outputName = do
   unifyResults <- traverse (unifyCon taskData) taskData.typeInfo.cons
   logDebug "Unification results: \{joinBy "," $ map showUR unifyResults}"
 
-  conIs <- taskData.assembleInfo unifyResults
+  conIs <- taskData.assembleInfo $ map (map (\x => (x.lhsVars, x.rhsVars))) unifyResults
 
   let typeDecl = monoTypeDeclaration' taskData conIs
   logDebug "Type declaration : \{show typeDecl}"

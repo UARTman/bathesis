@@ -25,7 +25,7 @@ parameters {auto task: UnificationTask}
   tryElab errMsg e = do
     elabRes <- catch e
     case elabRes of
-      Nothing => throwUErr $ ElabFailed !(quote e) errMsg
+      Nothing => throwUErr $ ElabFailed errMsg
       Just r => pure r
 
   public export

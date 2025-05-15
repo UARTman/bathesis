@@ -2,6 +2,8 @@ module Language.Reflection.Unification.Graph
 
 import public Language.Reflection.Unification.Engine
 
+%language ElabReflection
+
 record DependencyGraph where
   constructor MkDG
   dependsOn : SortedMap Nat $ SortedMap Nat $ SortedSet Name
@@ -86,6 +88,7 @@ parameters {auto task : UnificationTask}
     expr <- bd.expr
     Just expr.data
 
+
   subDep :
        Nat
     -> Nat
@@ -109,6 +112,29 @@ parameters {auto task : UnificationTask}
             $ fromMaybe empty
               $ lookup a
                 =<< lookup b dg.dependsOn
+
+  subDepM : Monad m => 
+            MonadState UnificationState m =>
+            MonadState DependencyGraph m =>
+            Nat -> Nat -> m ()
+  subDepM a b  = do
+    state <- get
+    dg <- get
+    case (getContent a state) of
+      Nothing => pure ()
+      Just expr => do
+        let subName : Name -> BucketData -> BucketData = (\n => {expr $= map $ map $ substituteVariable n expr})
+        modify {stateType=UnificationState} {buckets $= updateExisting (updateBucket subName dg) b}
+        modify {stateType=DependencyGraph} $ delDep b a
+        pure ()
+
+    where
+      updateBucket : (Name -> BucketData -> BucketData) -> DependencyGraph -> BucketData -> BucketData
+      updateBucket subName' dg bd =
+        Prelude.foldr subName' bd
+          $ fromMaybe empty
+            $ lookup a
+              =<< lookup b dg.dependsOn
 
   subLeaf :
        Nat
@@ -149,6 +175,18 @@ isLeaf n dg = isDependedOn && hasNoChildren
 
 findLeaves : List Nat -> DependencyGraph -> List Nat
 findLeaves nodes dg = filter (flip isLeaf dg) nodes
+
+public export
+record UnificationResult where
+  constructor MkUR
+  lhsVars : SortedMap Name TTImp
+  rhsVars : SortedMap Name TTImp
+  lhsFree : SortedSet Name
+  rhsFree : SortedSet Name
+  lhsFords : List (TTImp, TTImp)
+  rhsFords : List (TTImp, TTImp)
+
+%runElab derive "UnificationResult" [Show]
 
 parameters {auto task: UnificationTask}
   fillIn :
@@ -197,3 +235,26 @@ parameters {auto task: UnificationTask}
           expr <- bd.expr
           Just $ insert n expr.data sm
 
+  public export
+  solveUState : UnificationState -> UnificationResult
+  solveUState ustate = do
+    let dg = getDepGraph ustate
+    let (ns, ndg) = fillIn ustate dg
+    let lhsR = foldl (searchNameByOrigin ns Left) empty (keys task.lhsVars)
+    let rhsR = foldl (searchNameByOrigin ns Right) empty (keys task.rhsVars)
+    let lhsFree = difference (fromList $ keys task.lhsVars) (fromList $ keys lhsR)
+    let rhsFree = difference (fromList $ keys task.rhsVars) (fromList $ keys rhsR)
+    MkUR lhsR rhsR lhsFree rhsFree [] []
+    where
+      searchNameByOrigin :
+           UnificationState
+        -> Origin
+        -> SortedMap Name TTImp -> Name -> SortedMap Name TTImp
+      searchNameByOrigin ust o sm n = fromMaybe sm found
+        where
+        found : Maybe $ SortedMap Name TTImp
+        found = do
+          bid <- lookup (MkTag o empty n) ust.nameToBucket
+          bd <- lookup bid ust.buckets
+          expr <- bd.expr
+          Just $ insert n expr.data sm

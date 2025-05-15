@@ -3,14 +3,14 @@ module Language.Reflection.Unification.Runner
 import public Language.Reflection.Unification.Graph
 
 public export
-doUnification' : (task : UnificationTask) -> Unification $ (SortedMap Name TTImp, SortedMap Name TTImp)
+doUnification' : (task : UnificationTask) -> Unification UnificationResult
 doUnification' task = do
   unifyExpr (tagLeft' task.lhs) (tagRight' task.rhs)
   state <- get
-  pure $ consolidateUState state
+  pure $ solveUState state
 
 public export
-doUnification : Elaboration m => List (Name, TTImp) -> TTImp -> List (Name, TTImp) -> TTImp -> m $ Either UnificationError (SortedMap Name TTImp, SortedMap Name TTImp)
+doUnification : Elaboration m => List (Name, TTImp) -> TTImp -> List (Name, TTImp) -> TTImp -> m $ Either UnificationError UnificationResult
 doUnification lhsV lhs rhsV rhs = do
   let task = MkTask lhs (fromList lhsV) rhs (fromList rhsV)
   try (fail "") $ evalUni empty $ doUnification' task

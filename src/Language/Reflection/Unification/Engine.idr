@@ -1,10 +1,25 @@
 module Language.Reflection.Unification.Engine
 
 import public Language.Reflection.Unification.Monad
-import public Deriving.DepTyCheck.Util.Reflection
+import public Language.Reflection.Expr
 
 (.toList) : SortedSet t -> List t
 (.toList) = Prelude.toList
+
+lookupNInfo : Elaboration m => Name -> m NameInfo
+lookupNInfo n = do
+  results <- getInfo n
+  case results of
+    [] => fail "No variables with this name!"
+    ((_, ni) :: _) => pure ni
+
+Eq NameType where
+  Bound == Bound = True
+  Func == Func = True
+  DataCon a b == DataCon a' b' = a == a && b == b'
+  TyCon a b == TyCon a' b' = a == a && b == b'
+  _ == _ = False
+
 
 parameters {auto task: UnificationTask}
   logStep : Elaboration m => UStep -> m ()
@@ -100,7 +115,7 @@ parameters {auto task: UnificationTask}
 
   unrollIApp : MonadReader UStack m => Tag TTImp -> m AppData
   unrollIApp t = do
-    let (fn, args) = Deriving.DepTyCheck.Util.Reflection.unAppAny t.data
+    let (fn, args) = Expr.unAppAny t.data
     foldlM (flip (addArg t.origin t.aliasMap)) (MkAppData (t.same fn) [] empty []) args
 
   unifyMyArg : MonadUni m => MyArg -> MyArg -> m ()
@@ -133,6 +148,61 @@ parameters {auto task: UnificationTask}
     for_ (zip adNs adNs') $ uncurry unifyNameds
     pure ()
 
+  ford : MonadUni m => Tag TTImp -> Tag TTImp -> m ()
+  ford a b = modify {fords $= ((a, b) ::)}
+
+  shouldFordVar : MonadUni m => Tag Name -> m Bool
+  shouldFordVar tn = do
+    if tn.isFreeVar then
+      pure False else do
+      let name = tn.data
+      (_, nType) <- tryElab "looking up \{name}" $ lookupName name
+      nInfo <- tryElab "looking up \{name}'s info" $ lookupNInfo name
+      case nInfo.nametype of
+        Bound => throwUErr UnsupportedUnification
+        Func => pure True
+        TyCon _ _ => pure False
+        DataCon _ _ => pure False
+
+  shouldFordApp : MonadUni m => Tag TTImp -> m Bool
+  shouldFordApp te = do
+    appData <- unrollIApp te
+    case appData.fn.data of
+      IVar _ varN => do
+        shouldFordVar $ appData.fn.same varN
+      _ => pure True
+
+  shouldFord : MonadUni m => Tag TTImp -> m Bool
+  shouldFord t@(MkTag _ _ (IVar fc nm)) = shouldFordVar $ t.same nm
+  shouldFord (MkTag _ _ (IPi fc rig pinfo mnm argTy retTy)) = pure True
+  shouldFord (MkTag _ _ (ILam fc rig pinfo mnm argTy lamTy)) = pure True
+  shouldFord (MkTag _ _ (ILet fc lhsFC rig nm nTy nVal scope)) = pure False
+  shouldFord (MkTag _ _ (ICase fc xs s ty cls)) = pure True
+  shouldFord (MkTag _ _ (ILocal fc decls s)) = pure True
+  shouldFord (MkTag _ _ (IUpdate fc upds s)) = pure True
+  shouldFord t@(MkTag _ _ (IApp fc s _)) = shouldFordApp t
+  shouldFord t@(MkTag _ _ (INamedApp fc s nm _)) = shouldFordApp t
+  shouldFord t@(MkTag _ _ (IAutoApp fc s _)) = shouldFordApp t
+  shouldFord t@(MkTag _ _ (IWithApp fc s _)) = shouldFordApp t
+  shouldFord (MkTag _ _ (ISearch fc depth)) = throwUErr UnsupportedUnification
+  shouldFord (MkTag _ _ (IAlternative fc x ss)) = pure False
+  shouldFord (MkTag _ _ (IRewrite fc s t)) = pure True
+  shouldFord (MkTag _ _ (IBindHere fc bm s)) = throwUErr UnsupportedUnification
+  shouldFord (MkTag _ _ (IBindVar fc str)) = throwUErr UnsupportedUnification
+  shouldFord (MkTag _ _ (IAs fc nameFC side nm s)) = throwUErr UnsupportedUnification
+  shouldFord (MkTag _ _ (IMustUnify fc dr s)) = throwUErr UnsupportedUnification
+  shouldFord (MkTag _ _ (IDelayed fc lr s)) = pure True
+  shouldFord (MkTag _ _ (IDelay fc s)) = pure True
+  shouldFord (MkTag _ _ (IForce fc s)) = pure True
+  shouldFord (MkTag _ _ (IQuote fc s)) = pure False
+  shouldFord (MkTag _ _ (IQuoteName fc nm)) = pure False
+  shouldFord (MkTag _ _ (IQuoteDecl fc decls)) = pure False
+  shouldFord (MkTag _ _ (IUnquote fc s)) = pure False
+  shouldFord (MkTag _ _ (IPrimVal fc c)) = pure False
+  shouldFord (MkTag _ _ (IType fc)) = pure False
+  shouldFord (MkTag _ _ (IHole fc str)) = throwUErr UnsupportedUnification
+  shouldFord (MkTag _ _ (Implicit fc bindIfUnsolved)) = throwUErr UnsupportedUnification
+  shouldFord (MkTag _ _ (IWithUnambigNames fc xs s)) = pure True
 
   unifyIApp : MonadUni m => Tag TTImp -> Tag TTImp -> m ()
   unifyIApp lhs rhs = do
@@ -159,33 +229,33 @@ parameters {auto task: UnificationTask}
         (False, False) => do
           (_, lhsType) <- tryElab "looking up \{nmL}" $ lookupName nmL
           (_, rhsType) <- tryElab "looking up \{nmR}" $ lookupName nmR
-          case (lhsType, rhsType) of
-            (IType _, IType _) => do
-              lhs'' : Type <- tryElab "typechecking \{show lhs'}" $ check lhs'
-              rhs'' : Type <- tryElab "typechecking \{show rhs'}" $ check rhs'
-              res <- search (lhs'' = rhs'')
-              case res of
-                Just _ => pure ()
-                Nothing => throwUErr $ NoTypeEqProof lhs rhs
-            (IType _, rrr) => throwUErr $ CantUnifyTypeWith nmL rrr
-            (lll, IType _) => throwUErr $ CantUnifyTypeWith nmR lll
-            (IPi _ _ _ _ _ _, IPi _ _ _ _ _ _ ) =>
-              if (lhsType == rhsType && nmL == nmR) then
-                pure ()
-              else
-                throwUErr $ FuncVarMismatch
-            (_, _) =>
-              if (lhsType == rhsType && lhs' == rhs') then
-                pure ()
-              else 
-                throwUErr $ UnsupportedVars nmL lhsType nmR rhsType
+          lhsInfo <- tryElab "looking up \{nmL}'s info" $ lookupNInfo nmL
+          rhsInfo <- tryElab "looking up \{nmR}'s info" $ lookupNInfo nmR
+
+          if (lhsInfo.nametype /= rhsInfo.nametype) 
+             then throwUErr NameTypeMismatch
+             else do
+               lhsT : Maybe Type <- catch $ check lhsType
+               rhsT : Maybe Type <- catch $ check rhsType
+               case (lhsT, rhsT) of
+                (Just lhsT', Just rhsT') => do
+                  lhs'' : lhsT' <- tryElab "typechecking \{show lhs'}" $ check lhs'
+                  rhs'' : rhsT' <- tryElab "typechecking \{show rhs'}" $ check rhs'
+                  res <- search (lhs'' = rhs'')
+                  case res of
+                    Just _ => pure ()
+                    Nothing => throwUErr $ NoTypeEqProof lhs rhs
+                (_, _) => do
+                  -- unifyExpr (lhs.same lhsType) (rhs.same rhsType)
+                  if (lhs' == rhs' && lhsType == rhsType) then pure () else ford lhs rhs
+                    
     unifyVars lhs rhs | (lhs', rhs') = throwUErr BrokenInvariant
 
   unifyVarOther : MonadUni m => Tag TTImp -> Tag TTImp -> m ()
   unifyVarOther lhs@(MkTag _ _ (IVar _ nm)) rhs = 
     if (lhs.isFreeVar')
       then lhs.same nm :== rhs
-      else throwUErr $ VarNonVar
+      else ford lhs rhs
   unifyVarOther lhs rhs = throwUErr BrokenInvariant
 
   unifyPrim : MonadUni m => Tag TTImp -> Tag TTImp -> m ()
@@ -208,4 +278,9 @@ parameters {auto task: UnificationTask}
     unifyImpl lhs rhs | (lhs'@(IAutoApp _ _ _), rhs'@(IAutoApp _ _ _)) = unifyIApp lhs rhs
     unifyImpl lhs rhs | (rhs', lhs') = throwUErr $ UnsupportedUnification
 
-  unifyExpr lhs rhs = uStep (SubUnification lhs rhs) $ unifyImpl lhs.unalias rhs.unalias
+  unifyExpr lhs rhs = uStep (SubUnification lhs rhs) $ do
+    foldLHS <- shouldFord lhs
+    foldRHS <- shouldFord rhs
+    case (foldLHS, foldRHS) of
+      (False, False) => unifyImpl lhs.unalias rhs.unalias
+      _ => ford lhs rhs

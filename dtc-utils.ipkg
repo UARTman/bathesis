@@ -29,7 +29,7 @@ modules = Language.Reflection.VarSubst
         , Language.Reflection.Unification.State
         , Language.Reflection.Monomorphisation
 
-depends = elab-util, elab-pretty, prettier, deptycheck, i-hate-parens, mtl-tuple-impls
+depends = elab-util, elab-pretty, prettier, elab-util-extra, i-hate-parens, mtl-tuple-impls
 
 -- main file (i.e. file to load at REPL)
 -- main =
